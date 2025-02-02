@@ -39,6 +39,10 @@ flutter:
         pluginClass: FlutterWireguardPlugin
       ios:
         pluginClass: FlutterWireguardPlugin
+        sharedDarwinSource: true
+      macos:
+        pluginClass: WireguardFlutterPlugin
+        sharedDarwinSource: true
       linux:
         pluginClass: FlutterWireguardPlugin
       windows:
