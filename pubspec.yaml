@@ -35,7 +35,7 @@ flutter:
   plugin:
     platforms:
       android:
-        package: com.example.flutter_wireguard
+        package: dev.fluttercommunity.flutter_wireguard
         pluginClass: FlutterWireguardPlugin
       ios:
         pluginClass: FlutterWireguardPlugin
