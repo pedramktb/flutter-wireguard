@@ -1,4 +1,4 @@
-group = "com.example.flutter_wireguard"
+group = "dev.fluttercommunity.flutter_wireguard"
 version = "1.0-SNAPSHOT"
 
 buildscript {
@@ -25,7 +25,7 @@ apply plugin: "com.android.library"
 apply plugin: "kotlin-android"
 
 android {
-    namespace = "com.example.flutter_wireguard"
+    namespace = "dev.fluttercommunity.flutter_wireguard"
 
     compileSdk = 35
 
@@ -48,19 +48,10 @@ android {
     }
 
     dependencies {
-        testImplementation("org.jetbrains.kotlin:kotlin-test")
-        testImplementation("org.mockito:mockito-core:5.0.0")
+        implementation("com.wireguard.android:tunnel:1.0.20230706")
+        implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.1")
+        // uncomment this for access to the Flutter API in IDE for syntax highlighting of Flutter classes
+        implementation files('libs/flutter.jar')
     }
-
-    testOptions {
-        unitTests.all {
-            useJUnitPlatform()
-
-            testLogging {
-               events "passed", "skipped", "failed", "standardOut", "standardError"
-               outputs.upToDateWhen {false}
-               showStandardStreams = true
-            }
-        }
-    }
+    buildToolsVersion '34.0.0'
 }
