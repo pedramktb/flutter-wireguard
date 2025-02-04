@@ -93,6 +93,24 @@ class FlutterWireguardPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, A
                     result.error("Failed to stop tunnel", e.message, null)
                 }
             }
+
+            "status" -> {
+                if (!permission) {
+                    result.error("Failed to stop tunnel", "User denied permission", null)
+                    return
+                }
+                try {
+                    val status = wireguard.status(call.argument("name")!!)
+                    result.success(mapOf(
+                        "name" to status.name,
+                        "state" to status.state.toString(),
+                        "rx" to status.rx,
+                        "tx" to status.tx
+                    ))
+                } catch (e: Exception) {
+                    result.error("Failed to stop tunnel", e.message, null)
+                }
+            }
             
             else -> result.notImplemented()
         }

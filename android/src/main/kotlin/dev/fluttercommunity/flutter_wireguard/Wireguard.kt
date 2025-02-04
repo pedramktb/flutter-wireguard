@@ -26,8 +26,8 @@ class Wireguard private constructor(context: Context) {
     private var rootShell: RootShell = RootShell(context)
     private var toolsInstaller: ToolsInstaller = ToolsInstaller(context, rootShell)
     private var tunnels: HashMap<String, Tunnel> = HashMap()
-    data class TunnelStatus(val name: String, val state: Tunnel.State,val rx: Long,val tx: Long)
-    private val _tunnelStatusFlow = MutableStateFlow<Map<String, TunnelStatus>>(emptyMap())
+    data class Status(val name: String, val state: Tunnel.State,val rx: Long,val tx: Long)
+    private val _tunnelStatusFlow = MutableStateFlow<Map<String, Status>>(emptyMap())
     val tunnelStatusFlow = _tunnelStatusFlow.asStateFlow()
 
     init {
@@ -68,6 +68,15 @@ class Wireguard private constructor(context: Context) {
         }, Tunnel.State.DOWN, null)
     }
 
+    fun status(name: String):Status {
+        val tun = tunnel(name)
+       val stats  = backend!!.getStatistics(tun)
+         val rx = stats.totalRx()
+            val tx = stats.totalTx()
+        return Status(name,backend!!.getState(tunnel(name)),rx,tx)
+
+    }
+
     private fun tunnel(name: String, onStateChanged: ((Tunnel.State) -> Unit)? = null): Tunnel =
         tunnels.getOrPut(name) {
             object : Tunnel {
@@ -77,7 +86,7 @@ class Wireguard private constructor(context: Context) {
                     val rx = stats.totalRx()
                     val tx = stats.totalTx()
                     _tunnelStatusFlow.value = _tunnelStatusFlow.value.toMutableMap().apply {
-                        put(name, TunnelStatus(name,state,rx,tx))
+                        put(name, Status(name,state,rx,tx))
                     }
                     onStateChanged?.invoke(state)
                 }
