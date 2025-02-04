@@ -1,7 +1,7 @@
 import 'package:flutter/services.dart';
 import 'package:flutter_wireguard/flutter_wireguard_platform_interface.dart';
 
-class FlutterWireguardMethodChannel extends FlutterWireguard {
+class FlutterWireguardMethodChannel extends FlutterWireguardPlatformInterface {
   static const _methodChannel =
       MethodChannel("dev.fluttercommunity.flutter_wireguard/methodChannel");
   static const _eventChannel =

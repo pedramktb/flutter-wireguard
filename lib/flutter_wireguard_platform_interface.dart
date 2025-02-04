@@ -1,14 +1,15 @@
 import 'package:flutter_wireguard/flutter_wireguard_method_channel.dart';
 import 'package:plugin_platform_interface/plugin_platform_interface.dart';
 
-abstract class FlutterWireguard extends PlatformInterface {
-  FlutterWireguard() : super(token: _token);
+abstract class FlutterWireguardPlatformInterface extends PlatformInterface {
+  FlutterWireguardPlatformInterface() : super(token: _token);
 
   static final Object _token = Object();
 
-  static FlutterWireguard _instance = FlutterWireguardMethodChannel();
-  static FlutterWireguard get instance => _instance;
-  static set instance(FlutterWireguard instance) {
+  static FlutterWireguardPlatformInterface _instance =
+      FlutterWireguardMethodChannel();
+  static FlutterWireguardPlatformInterface get instance => _instance;
+  static set instance(FlutterWireguardPlatformInterface instance) {
     PlatformInterface.verifyToken(instance, _token);
     _instance = instance;
   }
