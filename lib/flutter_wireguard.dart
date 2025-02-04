@@ -11,10 +11,10 @@ class FlutterWireguard extends FlutterWireguardPlatformInterface {
       FlutterWireguardPlatformInterface.instance.stop(name: name);
 
   @override
-  Future<dynamic> status({required String name}) =>
+  Future<Map<String, dynamic>> status({required String name}) =>
       FlutterWireguardPlatformInterface.instance.status(name: name);
 
   @override
-  Future<Stream<dynamic>> statusStream() =>
+  Stream<Map<String, dynamic>> statusStream() =>
       FlutterWireguardPlatformInterface.instance.statusStream();
 }

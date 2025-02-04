@@ -21,13 +21,13 @@ class FlutterWireguardMethodChannel extends FlutterWireguardPlatformInterface {
   @override
   Future<void> stop({
     required String name,
-  }) async =>
+  }) =>
       _methodChannel.invokeMethod('stop');
 
   final Exception invalidStatus = Exception("Invalid status response");
 
   @override
-  Future<dynamic> status({required String name}) async =>
+  Future<Map<String, dynamic>> status({required String name}) =>
       _methodChannel.invokeMethod("status", {
         "name": name,
       }).then((value) => value is Map<String, dynamic>
@@ -43,7 +43,7 @@ class FlutterWireguardMethodChannel extends FlutterWireguardPlatformInterface {
           : throw invalidStatus);
 
   @override
-  Future<Stream<dynamic>> statusStream() async => _eventChannel
+  Stream<Map<String, dynamic>> statusStream() => _eventChannel
       .receiveBroadcastStream()
       .map((event) => event is Map<String, dynamic>
           ? {

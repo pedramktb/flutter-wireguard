@@ -20,10 +20,10 @@ abstract class FlutterWireguardPlatformInterface extends PlatformInterface {
   }) async =>
       throw UnimplementedError();
 
-  Future<void> stop({required String name}) async => throw UnimplementedError();
+  Future<void> stop({required String name}) => throw UnimplementedError();
 
-  Future<dynamic> status({required String name}) async =>
+  Future<Map<String, dynamic>> status({required String name}) =>
       throw UnimplementedError();
 
-  Future<Stream<dynamic>> statusStream() async => throw UnimplementedError();
+  Stream<Map<String, dynamic>> statusStream() => throw UnimplementedError();
 }
