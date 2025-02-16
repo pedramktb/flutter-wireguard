@@ -53,19 +53,11 @@ class Wireguard private constructor(context: Context) {
     fun wgQuickBackend() : Boolean = backend is WgQuickBackend
 
     fun start(name: String, config:String) {
-        backend!!.setState(tunnel(name) { state: Tunnel.State ->
-            if (state == Tunnel.State.UP) {
-                throw Exception("Failed to start tunnel")
-            }
-        }, Tunnel.State.UP, com.wireguard.config.Config.parse(ByteArrayInputStream(config.toByteArray())))
+        backend!!.setState(tunnel(name), Tunnel.State.UP, com.wireguard.config.Config.parse(ByteArrayInputStream(config.toByteArray())))
     }
 
     fun stop(name: String) {
-       backend!!.setState(tunnel(name) { state: Tunnel.State ->
-            if (state == Tunnel.State.DOWN) {
-                throw Exception("Failed to stop tunnel")
-            }
-        }, Tunnel.State.DOWN, null)
+       backend!!.setState(tunnel(name), Tunnel.State.DOWN, null)
     }
 
     fun status(name: String):Status {
@@ -77,7 +69,7 @@ class Wireguard private constructor(context: Context) {
 
     }
 
-    private fun tunnel(name: String, onStateChanged: ((Tunnel.State) -> Unit)? = null): Tunnel =
+    private fun tunnel(name: String): Tunnel =
         tunnels.getOrPut(name) {
             object : Tunnel {
                 override fun getName():String = name
@@ -88,7 +80,6 @@ class Wireguard private constructor(context: Context) {
                     _tunnelStatusFlow.value = _tunnelStatusFlow.value.toMutableMap().apply {
                         put(name, Status(name,state,rx,tx))
                     }
-                    onStateChanged?.invoke(state)
                 }
             }
         }
