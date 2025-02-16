@@ -3,7 +3,9 @@ package dev.fluttercommunity.flutter_wireguard
 import android.app.Activity
 import android.content.Context
 import android.content.Intent
+import android.util.Log
 import com.wireguard.android.backend.GoBackend
+import com.wireguard.android.backend.BackendException
 import io.flutter.embedding.engine.plugins.FlutterPlugin
 import io.flutter.embedding.engine.plugins.activity.ActivityAware
 import io.flutter.embedding.engine.plugins.activity.ActivityPluginBinding
@@ -11,11 +13,7 @@ import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import io.flutter.plugin.common.PluginRegistry.ActivityResultListener
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.cancel
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
+import kotlinx.coroutines.*
 
 private const val permissionRequestCode = 10014
 
@@ -26,7 +24,7 @@ class FlutterWireguardPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, A
     private var activity: Activity? = null
     private var permission: Boolean = false
     private var eventSink: EventChannel.EventSink? = null
-    private val ioCoroutineScope = CoroutineScope(Dispatchers.IO)
+    private val scope = CoroutineScope(Job() + Dispatchers.Main.immediate)
 
     override fun onAttachedToEngine(flutterPluginBinding: FlutterPlugin.FlutterPluginBinding) {
         methodChannel = MethodChannel(flutterPluginBinding.binaryMessenger, "dev.fluttercommunity.flutter_wireguard/methodChannel")
@@ -36,15 +34,15 @@ class FlutterWireguardPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, A
         eventChannel.setStreamHandler(object : EventChannel.StreamHandler {
             override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
                 eventSink = events
-                ioCoroutineScope.launch {
+                scope.launch(Dispatchers.IO) {
                     wireguard.tunnelStatusFlow.collect { tunnelStatuses ->
                         tunnelStatuses.forEach { (name, status) ->
                             withContext(Dispatchers.Main) {
                                 eventSink?.success(mapOf(
-                                    "name" to name,
-                                    "state" to status.state.toString(),
-                                    "rx" to status.rx,
-                                    "tx" to status.tx
+                                        "name" to name,
+                                        "state" to status.state.toString(),
+                                        "rx" to status.rx,
+                                        "tx" to status.tx
                                 ))
                             }
                         }
@@ -60,7 +58,6 @@ class FlutterWireguardPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, A
 
     override fun onDetachedFromEngine(flutterPluginBinding: FlutterPlugin.FlutterPluginBinding) {
         eventSink = null
-        ioCoroutineScope.cancel()
         methodChannel.setMethodCallHandler(null)
         eventChannel.setStreamHandler(null)
     }
@@ -68,50 +65,36 @@ class FlutterWireguardPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, A
     override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
         when (call.method) {
             "start" -> {
-                if (!permission) {
-                    result.error("Failed to start tunnel", "User denied permission", null)
-                    return
-                }
-                try {
+
+                scope.launch(Dispatchers.IO) {
                     wireguard.start(call.argument("name")!!, call.argument("config")!!)
                     result.success(null)
-                } catch (e: Exception) {
-                    wireguard.stop(call.argument("name")!!)
-                    result.error("Failed to start tunnel", e.message, null)
                 }
             }
 
             "stop" -> {
-                if (!permission) {
-                    result.error("Failed to stop tunnel", "User denied permission", null)
-                    return
-                }
-                try {
+
+                scope.launch(Dispatchers.IO) {
                     wireguard.stop(call.argument("name")!!)
                     result.success(null)
-                } catch (e: Exception) {
-                    result.error("Failed to stop tunnel", e.message, null)
+
                 }
             }
 
             "status" -> {
-                if (!permission) {
-                    result.error("Failed to stop tunnel", "User denied permission", null)
-                    return
-                }
-                try {
+
+                scope.launch(Dispatchers.IO) {
                     val status = wireguard.status(call.argument("name")!!)
                     result.success(mapOf(
-                        "name" to status.name,
-                        "state" to status.state.toString(),
-                        "rx" to status.rx,
-                        "tx" to status.tx
+                            "name" to status.name,
+                            "state" to status.state.toString(),
+                            "rx" to status.rx,
+                            "tx" to status.tx
                     ))
-                } catch (e: Exception) {
-                    result.error("Failed to stop tunnel", e.message, null)
                 }
+
             }
-            
+
             else -> result.notImplemented()
         }
     }
@@ -152,6 +135,10 @@ class FlutterWireguardPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, A
             throw Exception("No backend available")
         }
 
-        activity?.startActivityForResult(intent, permissionRequestCode)
+        if (intent != null) {
+            activity?.startActivityForResult(intent, permissionRequestCode)
+        } else {
+            permission = true;
+        }
     }
 }

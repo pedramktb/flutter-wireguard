@@ -50,8 +50,8 @@ android {
     dependencies {
         implementation("com.wireguard.android:tunnel:1.0.20230706")
         implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.8.1")
-        // uncomment this for access to the Flutter API in IDE for syntax highlighting of Flutter classes
-        implementation files('libs/flutter.jar')
+//        // uncomment this for access to the Flutter API in IDE for syntax highlighting of Flutter classes
+//        implementation files('libs/flutter.jar')
     }
     buildToolsVersion '34.0.0'
 }
