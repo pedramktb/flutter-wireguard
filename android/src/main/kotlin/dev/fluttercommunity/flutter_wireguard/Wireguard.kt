@@ -42,7 +42,7 @@ class Wireguard private constructor(context: Context) {
             }
             if (backend == null) {
                 backend = GoBackend(context)
-                // GoBackend.setAlwaysOnCallback {} // TODO: add a callback if needed
+                // GoBackend.setAlwaysOnCallback {}
             }
         } catch (e: Throwable) {
             throw Exception("Failed to initialize WireGuard backend", e)
@@ -62,11 +62,10 @@ class Wireguard private constructor(context: Context) {
 
     fun status(name: String):Status {
         val tun = tunnel(name)
-       val stats  = backend!!.getStatistics(tun)
-         val rx = stats.totalRx()
-            val tx = stats.totalTx()
+        val stats  = backend!!.getStatistics(tun)
+        val rx = stats.totalRx()
+        val tx = stats.totalTx()
         return Status(name,backend!!.getState(tunnel(name)),rx,tx)
-
     }
 
     private fun tunnel(name: String): Tunnel =

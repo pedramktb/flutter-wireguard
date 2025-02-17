@@ -20,6 +20,12 @@ set(PLUGIN_NAME "flutter_wireguard_plugin")
 list(APPEND PLUGIN_SOURCES
   "flutter_wireguard_plugin.cpp"
   "flutter_wireguard_plugin.h"
+  "config_writer.cpp"
+  "config_writer.h"
+  "service_control.cpp"
+  "service_control.h"
+  "utils.cpp"
+  "utils.h"
 )
 
 # Define the plugin library target. Its name must not be changed (see comment
@@ -48,53 +54,43 @@ target_include_directories(${PLUGIN_NAME} INTERFACE
   "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_link_libraries(${PLUGIN_NAME} PRIVATE flutter flutter_wrapper_plugin)
 
+# b64 and wireguard
+add_subdirectory(external)
+target_link_libraries(${PLUGIN_NAME} PRIVATE base64)
+
+add_compile_definitions(WIN32_LEAN_AND_MEAN) # for Wireguard winsock/windows conflict
+
+add_library(tunnel SHARED IMPORTED GLOBAL)
+set_target_properties(tunnel PROPERTIES
+    IMPORTED_LOCATION "${CMAKE_CURRENT_SOURCE_DIR}/lib/tunnel/amd64/tunnel.dll"
+    IMPORTED_IMPLIB "${CMAKE_CURRENT_SOURCE_DIR}/lib/tunnel/amd64/tunnel.lib"
+)
+target_include_directories(tunnel INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/lib/tunnel/include")
+target_link_libraries(${PLUGIN_NAME} PRIVATE tunnel)
+
+add_library(wireguard SHARED IMPORTED GLOBAL)
+set_target_properties(wireguard PROPERTIES
+    IMPORTED_LOCATION "${CMAKE_CURRENT_SOURCE_DIR}/lib/wireguard/x64/wireguard.dll"
+    IMPORTED_IMPLIB "${CMAKE_CURRENT_SOURCE_DIR}/lib/wireguard/x64/wireguard.lib"
+)
+target_include_directories(wireguard INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/lib/wireguard/include")
+target_link_libraries(${PLUGIN_NAME} PRIVATE wireguard)
+
+target_include_directories(${PLUGIN_NAME} INTERFACE
+  "${CMAKE_CURRENT_SOURCE_DIR}/include"
+  "${CMAKE_CURRENT_SOURCE_DIR}/lib/tunnel/include"
+  "${CMAKE_CURRENT_SOURCE_DIR}/lib/wireguard/include"
+)
+target_link_libraries(${PLUGIN_NAME} PRIVATE flutter flutter_wrapper_plugin)
+
 # List of absolute paths to libraries that should be bundled with the plugin.
 # This list could contain prebuilt libraries, or libraries created by an
 # external build triggered from this build file.
 set(flutter_wireguard_bundled_libraries
-  ""
+  "${CMAKE_CURRENT_SOURCE_DIR}/lib/wireguard/x64/wireguard.dll"
+  "${CMAKE_CURRENT_SOURCE_DIR}/lib/tunnel/x64/tunnel.dll"
+  "${CMAKE_CURRENT_SOURCE_DIR}/lib/wireguard_svc/x64/wireguard_svc.exe"
   PARENT_SCOPE
 )
 
-# === Tests ===
-# These unit tests can be run from a terminal after building the example, or
-# from Visual Studio after opening the generated solution file.
-
-# Only enable test builds when building the example (which sets this variable)
-# so that plugin clients aren't building the tests.
-if (${include_${PROJECT_NAME}_tests})
-set(TEST_RUNNER "${PROJECT_NAME}_test")
-enable_testing()
-
-# Add the Google Test dependency.
-include(FetchContent)
-FetchContent_Declare(
-  googletest
-  URL https://github.com/google/googletest/archive/release-1.11.0.zip
-)
-# Prevent overriding the parent project's compiler/linker settings
-set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
-# Disable install commands for gtest so it doesn't end up in the bundle.
-set(INSTALL_GTEST OFF CACHE BOOL "Disable installation of googletest" FORCE)
-FetchContent_MakeAvailable(googletest)
-
-# The plugin's C API is not very useful for unit testing, so build the sources
-# directly into the test binary rather than using the DLL.
-add_executable(${TEST_RUNNER}
-  test/flutter_wireguard_plugin_test.cpp
-  ${PLUGIN_SOURCES}
-)
-apply_standard_settings(${TEST_RUNNER})
-target_include_directories(${TEST_RUNNER} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
-target_link_libraries(${TEST_RUNNER} PRIVATE flutter_wrapper_plugin)
-target_link_libraries(${TEST_RUNNER} PRIVATE gtest_main gmock)
-# flutter_wrapper_plugin has link dependencies on the Flutter DLL.
-add_custom_command(TARGET ${TEST_RUNNER} POST_BUILD
-  COMMAND ${CMAKE_COMMAND} -E copy_if_different
-  "${FLUTTER_LIBRARY}" $<TARGET_FILE_DIR:${TEST_RUNNER}>
-)
-
-# Enable automatic test discovery.
-include(GoogleTest)
-gtest_discover_tests(${TEST_RUNNER})
-endif()
+SET_TARGET_PROPERTIES(${BINARY_NAME} PROPERTIES LINK_FLAGS "/MANIFESTUAC:\"level='requireAdministrator' uiAccess='false'\" /SUBSYSTEM:WINDOWS")

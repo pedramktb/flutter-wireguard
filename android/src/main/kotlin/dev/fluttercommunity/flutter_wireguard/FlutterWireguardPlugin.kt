@@ -65,13 +65,11 @@ class FlutterWireguardPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, A
     override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
         when (call.method) {
             "start" -> {
-
                 scope.launch(Dispatchers.IO) {
                     wireguard.start(call.argument("name")!!, call.argument("config")!!)
                     result.success(null)
                 }
             }
-
             "stop" -> {
 
                 scope.launch(Dispatchers.IO) {
@@ -80,9 +78,7 @@ class FlutterWireguardPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, A
 
                 }
             }
-
             "status" -> {
-
                 scope.launch(Dispatchers.IO) {
                     val status = wireguard.status(call.argument("name")!!)
                     result.success(mapOf(
@@ -92,9 +88,7 @@ class FlutterWireguardPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, A
                             "tx" to status.tx
                     ))
                 }
-
             }
-
             else -> result.notImplemented()
         }
     }
