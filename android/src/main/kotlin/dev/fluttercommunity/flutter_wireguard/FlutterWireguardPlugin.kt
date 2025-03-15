@@ -3,7 +3,6 @@ package dev.fluttercommunity.flutter_wireguard
 import android.app.Activity
 import android.content.Context
 import android.content.Intent
-import android.util.Log
 import com.wireguard.android.backend.GoBackend
 import com.wireguard.android.backend.BackendException
 import io.flutter.embedding.engine.plugins.FlutterPlugin
@@ -12,19 +11,26 @@ import io.flutter.embedding.engine.plugins.activity.ActivityPluginBinding
 import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
+import io.flutter.plugin.common.MethodChannel.MethodCallHandler
+import io.flutter.plugin.common.MethodChannel.Result
 import io.flutter.plugin.common.PluginRegistry.ActivityResultListener
-import kotlinx.coroutines.*
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 private const val permissionRequestCode = 10014
 
-class FlutterWireguardPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, ActivityAware, ActivityResultListener {
+class FlutterWireguardPlugin : FlutterPlugin, MethodCallHandler, ActivityAware, ActivityResultListener {
     private lateinit var methodChannel: MethodChannel
     private lateinit var eventChannel: EventChannel
     private lateinit var wireguard: Wireguard
     private var activity: Activity? = null
     private var permission: Boolean = false
     private var eventSink: EventChannel.EventSink? = null
-    private val scope = CoroutineScope(Job() + Dispatchers.Main.immediate)
+    private val scope = CoroutineScope(Dispatchers.IO)
 
     override fun onAttachedToEngine(flutterPluginBinding: FlutterPlugin.FlutterPluginBinding) {
         methodChannel = MethodChannel(flutterPluginBinding.binaryMessenger, "dev.fluttercommunity.flutter_wireguard/methodChannel")
@@ -34,7 +40,7 @@ class FlutterWireguardPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, A
         eventChannel.setStreamHandler(object : EventChannel.StreamHandler {
             override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
                 eventSink = events
-                scope.launch(Dispatchers.IO) {
+                scope.launch {
                     wireguard.tunnelStatusFlow.collect { tunnelStatuses ->
                         tunnelStatuses.forEach { (name, status) ->
                             withContext(Dispatchers.Main) {
@@ -57,29 +63,30 @@ class FlutterWireguardPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, A
     }
 
     override fun onDetachedFromEngine(flutterPluginBinding: FlutterPlugin.FlutterPluginBinding) {
+        scope.cancel(CancellationException("Plugin detached"))
         eventSink = null
         methodChannel.setMethodCallHandler(null)
         eventChannel.setStreamHandler(null)
     }
 
-    override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
+    override fun onMethodCall(call: MethodCall, result: Result) {
         when (call.method) {
             "start" -> {
-                scope.launch(Dispatchers.IO) {
+                scope.launch {
                     wireguard.start(call.argument("name")!!, call.argument("config")!!)
                     result.success(null)
                 }
             }
             "stop" -> {
 
-                scope.launch(Dispatchers.IO) {
+                scope.launch {
                     wireguard.stop(call.argument("name")!!)
                     result.success(null)
 
                 }
             }
             "status" -> {
-                scope.launch(Dispatchers.IO) {
+                scope.launch {
                     val status = wireguard.status(call.argument("name")!!)
                     result.success(mapOf(
                             "name" to status.name,
@@ -122,7 +129,7 @@ class FlutterWireguardPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, A
         }
 
         val intent = if (wireguard.wgQuickBackend()) {
-            GoBackend.VpnService.prepare(activity)
+            null
         } else if (wireguard.goBackend()) {
             GoBackend.VpnService.prepare(activity)
         } else {

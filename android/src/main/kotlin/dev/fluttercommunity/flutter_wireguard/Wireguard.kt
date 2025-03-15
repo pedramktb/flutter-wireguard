@@ -1,15 +1,15 @@
 package dev.fluttercommunity.flutter_wireguard
 
 import android.content.Context
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import java.io.ByteArrayInputStream
 import com.wireguard.android.backend.Backend
 import com.wireguard.android.backend.GoBackend
 import com.wireguard.android.backend.Tunnel
 import com.wireguard.android.backend.WgQuickBackend
 import com.wireguard.android.util.RootShell
 import com.wireguard.android.util.ToolsInstaller
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import java.io.ByteArrayInputStream
 
 class Wireguard private constructor(context: Context) {
     companion object {
@@ -38,7 +38,8 @@ class Wireguard private constructor(context: Context) {
                     val wgQuickBackend = WgQuickBackend(context, rootShell, toolsInstaller)
                     wgQuickBackend.setMultipleTunnels(true)
                     backend = wgQuickBackend
-                } catch (ignored: Exception) {}
+                } catch (ignored: Exception) {
+                }
             }
             if (backend == null) {
                 backend = GoBackend(context)

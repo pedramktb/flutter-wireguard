@@ -44,7 +44,7 @@ android {
     }
 
     defaultConfig {
-        minSdk = 21
+        minSdk = 25
     }
 
     dependencies {
@@ -53,5 +53,4 @@ android {
        // uncomment this for access to the Flutter API in IDE for syntax highlighting of Flutter classes
        // implementation files('libs/flutter.jar')
     }
-    buildToolsVersion '34.0.0'
 }
