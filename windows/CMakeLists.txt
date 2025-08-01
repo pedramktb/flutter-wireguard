@@ -70,8 +70,8 @@ target_link_libraries(${PLUGIN_NAME} PRIVATE tunnel)
 
 add_library(wireguard SHARED IMPORTED GLOBAL)
 set_target_properties(wireguard PROPERTIES
-    IMPORTED_LOCATION "${CMAKE_CURRENT_SOURCE_DIR}/lib/wireguard/x64/wireguard.dll"
-    IMPORTED_IMPLIB "${CMAKE_CURRENT_SOURCE_DIR}/lib/wireguard/x64/wireguard.lib"
+    IMPORTED_LOCATION "${CMAKE_CURRENT_SOURCE_DIR}/lib/wireguard/amd64/wireguard.dll"
+    IMPORTED_IMPLIB "${CMAKE_CURRENT_SOURCE_DIR}/lib/wireguard/amd64/wireguard.lib"
 )
 target_include_directories(wireguard INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/lib/wireguard/include")
 target_link_libraries(${PLUGIN_NAME} PRIVATE wireguard)
@@ -87,9 +87,9 @@ target_link_libraries(${PLUGIN_NAME} PRIVATE flutter flutter_wrapper_plugin)
 # This list could contain prebuilt libraries, or libraries created by an
 # external build triggered from this build file.
 set(flutter_wireguard_bundled_libraries
-  "${CMAKE_CURRENT_SOURCE_DIR}/lib/wireguard/x64/wireguard.dll"
-  "${CMAKE_CURRENT_SOURCE_DIR}/lib/tunnel/x64/tunnel.dll"
-  "${CMAKE_CURRENT_SOURCE_DIR}/lib/wireguard_svc/x64/wireguard_svc.exe"
+  "${CMAKE_CURRENT_SOURCE_DIR}/lib/wireguard/amd64/wireguard.dll"
+  "${CMAKE_CURRENT_SOURCE_DIR}/lib/tunnel/amd64/tunnel.dll"
+  "${CMAKE_CURRENT_SOURCE_DIR}/lib/wireguard_svc/amd64/wireguard_svc.exe"
   PARENT_SCOPE
 )
 
