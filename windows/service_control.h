@@ -10,7 +10,7 @@
 #include <string>
 #include <memory>
 
-namespace wireguard_flutter
+namespace flutter_wireguard
 {
 
   struct CreateArgs
@@ -30,11 +30,11 @@ namespace wireguard_flutter
     void CreateAndStart(CreateArgs args);
     void Stop();
     std::string GetStatus();
-    void RegisterListener(std::unique_ptr<flutter::EventSink<flutter::EncodableMap>> &&events);
+    void RegisterListener(std::unique_ptr<flutter::EventSink<flutter::EncodableValue>> &&events);
     void UnregisterListener();
-    void EmitState(std::string state);
+    void EmitState(std::string state, std::string name, long long tx, long long rx);
   };
 
-} // namespace wireguard_flutter
+} // namespace flutter_wireguard
 
 #endif

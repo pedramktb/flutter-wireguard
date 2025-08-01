@@ -28,15 +28,18 @@ class FlutterWireguardMethodChannel extends FlutterWireguardPlatformInterface {
 
   @override
   Future<Map<String, dynamic>> status({required String name}) => _methodChannel.invokeMethod("status", {
-        "name": name,
-      }).then((value) => value is Map
-          ? {
-              "name": value["name"] is String ? value["name"] : throw invalidStatus,
-              "state": value["state"] is String ? value["state"] : throw invalidStatus,
-              "rx": value["rx"] is int ? value["rx"] : throw invalidStatus,
-              "tx": value["tx"] is int ? value["tx"] : throw invalidStatus,
-            }
-          : throw invalidStatus);
+    "name": name,
+  }).then((value) {
+    print("Status is : ${value}");
+    return value is Map
+        ? {
+      "name": value["name"] is String ? value["name"] : throw invalidStatus,
+      "state": value["state"] is String ? value["state"] : throw invalidStatus,
+      "rx": value["rx"] is int ? value["rx"] : throw invalidStatus,
+      "tx": value["tx"] is int ? value["tx"] : throw invalidStatus,
+    }
+        : throw invalidStatus;
+  });
 
   @override
   Stream<Map<String, dynamic>> statusStream() => _eventChannel.receiveBroadcastStream().map((event) => event is Map

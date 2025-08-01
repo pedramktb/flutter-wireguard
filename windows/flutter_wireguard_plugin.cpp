@@ -25,14 +25,14 @@ namespace flutter_wireguard
 {
 
   // static
-  void WireguardFlutterPlugin::RegisterWithRegistrar(PluginRegistrarWindows *registrar)
+  void FlutterWireguardPlugin::RegisterWithRegistrar(PluginRegistrarWindows *registrar)
   {
     auto channel = make_unique<MethodChannel<EncodableValue>>(
         registrar->messenger(), "dev.fluttercommunity.flutter_wireguard/methodChannel", &StandardMethodCodec::GetInstance());
     auto eventChannel = make_unique<EventChannel<EncodableValue>>(
         registrar->messenger(), "dev.fluttercommunity.flutter_wireguard/eventChannel", &StandardMethodCodec::GetInstance());
 
-    auto plugin = make_unique<WireguardFlutterPlugin>();
+    auto plugin = make_unique<FlutterWireguardPlugin>();
 
     channel->SetMethodCallHandler([plugin_pointer = plugin.get()](const auto &call, auto result)
                                   { plugin_pointer->HandleMethodCall(call, move(result)); });
@@ -56,11 +56,11 @@ namespace flutter_wireguard
     registrar->AddPlugin(move(plugin));
   }
 
-  WireguardFlutterPlugin::WireguardFlutterPlugin() {}
+  FlutterWireguardPlugin::FlutterWireguardPlugin() {}
 
-  WireguardFlutterPlugin::~WireguardFlutterPlugin() {}
+  FlutterWireguardPlugin::~FlutterWireguardPlugin() {}
 
-  void WireguardFlutterPlugin::HandleMethodCall(const MethodCall<EncodableValue> &call,
+  void FlutterWireguardPlugin::HandleMethodCall(const MethodCall<EncodableValue> &call,
                                                 unique_ptr<MethodResult<EncodableValue>> result)
   {
     const auto *args = get_if<EncodableMap>(call.arguments());
@@ -199,7 +199,7 @@ namespace flutter_wireguard
 
       long long tx = 0, rx = 0;
 
-      flutter::EncodableMap map = {{flutter::EncodableValue("name"), flutter::EncodableValue(name)},
+      flutter::EncodableMap map = {{flutter::EncodableValue("name"), flutter::EncodableValue(WideToAnsi(this->tunnel_service_->service_name_))},
                                    {flutter::EncodableValue("state"), flutter::EncodableValue(state)},
                                    {flutter::EncodableValue("tx"), flutter::EncodableValue(tx)},
                                    {flutter::EncodableValue("rx"), flutter::EncodableValue(rx)}};
@@ -210,7 +210,7 @@ namespace flutter_wireguard
     result->NotImplemented();
   }
 
-  unique_ptr<StreamHandlerError<EncodableValue>> WireguardFlutterPlugin::OnListen(
+  unique_ptr<StreamHandlerError<EncodableValue>> FlutterWireguardPlugin::OnListen(
       const EncodableValue *arguments,
       unique_ptr<EventSink<EncodableValue>> &&events)
   {
@@ -225,7 +225,7 @@ namespace flutter_wireguard
     return nullptr;
   }
 
-  unique_ptr<StreamHandlerError<EncodableValue>> WireguardFlutterPlugin::OnCancel(
+  unique_ptr<StreamHandlerError<EncodableValue>> FlutterWireguardPlugin::OnCancel(
       const EncodableValue *arguments)
   {
     events_ = nullptr;
