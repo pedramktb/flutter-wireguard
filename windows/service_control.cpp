@@ -12,6 +12,7 @@
 #include <string>
 
 #include "utils.h"
+#include "wireguard.h"
 #include <iostream>
 
 namespace wireguard_flutter
@@ -112,7 +113,7 @@ namespace wireguard_flutter
     {
       CloseServiceHandle(service);
       CloseServiceHandle(service_manager);
-      EmitState(this->service_name_, "UP", 0, 0);
+      EmitState(this->service_name_, "UP", 0, 0, 0);
       std::cout << "wireguard_flutter: Service is already running" << GetLastError() << std::endl;
       return;
     }
@@ -168,7 +169,7 @@ namespace wireguard_flutter
       }
     }
 
-    EmitState(this->service_name_, "UP", 0, 0);
+    EmitState(this->service_name_, "UP", 0, 0, 0);
 
     CloseServiceHandle(service);
     CloseServiceHandle(service_manager);
@@ -200,7 +201,7 @@ namespace wireguard_flutter
     }
     if (service_status.dwCurrentState == SERVICE_STOPPED)
     {
-      EmitState(this->service_name_, "DOWN", 0, 0);
+      EmitState(this->service_name_, "DOWN", 0, 0, 0);
       CloseServiceHandle(service);
       CloseServiceHandle(service_manager);
       return;
@@ -232,7 +233,7 @@ namespace wireguard_flutter
 
       if (service_status.dwCurrentState == SERVICE_STOPPED)
       {
-        EmitState(this->service_name_, "DOWN", 0, 0);
+        EmitState(this->service_name_, "DOWN", 0, 0, 0);
         CloseServiceHandle(service);
         CloseServiceHandle(service_manager);
         return;
@@ -269,7 +270,7 @@ namespace wireguard_flutter
 
       if (service_status.dwCurrentState == SERVICE_STOPPED)
       {
-        EmitState(this->service_name_, "DOWN", 0, 0);
+        EmitState(this->service_name_, "DOWN", 0, 0, 0);
         CloseServiceHandle(service);
         CloseServiceHandle(service_manager);
         return;
@@ -350,15 +351,17 @@ namespace wireguard_flutter
     if (events_ == nullptr)
     {
       events_ = std::move(events);
+      StartPolling();
     }
   }
 
   void ServiceControl::UnregisterListener()
   {
+    StopPolling();
     events_ = nullptr;
   }
 
-  void ServiceControl::EmitState(std::string name, std::string state, long long tx, long long rx)
+  void ServiceControl::EmitState(std::string name, std::string state, long long tx, long long rx, long long handshake)
   {
     if (events_ == nullptr)
     {
@@ -367,8 +370,144 @@ namespace wireguard_flutter
     flutter::EncodableMap map = {{flutter::EncodableValue("name"), flutter::EncodableValue(name)},
                                  {flutter::EncodableValue("state"), flutter::EncodableValue(state)},
                                  {flutter::EncodableValue("tx"), flutter::EncodableValue(tx)},
-                                 {flutter::EncodableValue("rx"), flutter::EncodableValue(rx)}};
+                                 {flutter::EncodableValue("rx"), flutter::EncodableValue(rx)},
+                                 {flutter::EncodableValue("handshake"), flutter::EncodableValue(handshake)}};
     events_->Success(flutter::EncodableValue(map));
+  }
+
+  namespace
+  {
+    const unsigned long long WINDOWS_TO_UNIX_EPOCH_100NS = 116444736000000000ULL;
+    inline long long filetime100nsToUnixMs(unsigned long long ticks100ns)
+    {
+      if (ticks100ns == 0 || ticks100ns < WINDOWS_TO_UNIX_EPOCH_100NS)
+      {
+        return 0;
+      }
+      return static_cast<long long>((ticks100ns - WINDOWS_TO_UNIX_EPOCH_100NS) / 10000ULL);
+    }
+
+    struct WireGuardApi
+    {
+      HMODULE module = nullptr;
+      WIREGUARD_OPEN_ADAPTER_FUNC *OpenAdapter = nullptr;
+      WIREGUARD_GET_CONFIGURATION_FUNC *GetConfiguration = nullptr;
+      WIREGUARD_CLOSE_ADAPTER_FUNC *CloseAdapter = nullptr;
+    };
+
+    inline bool LoadWireGuardApi(WireGuardApi &api)
+    {
+      if (api.module != nullptr)
+      {
+        return api.OpenAdapter && api.GetConfiguration && api.CloseAdapter;
+      }
+      api.module = LoadLibraryW(L"wireguard.dll");
+      if (!api.module)
+      {
+        return false;
+      }
+      api.OpenAdapter = reinterpret_cast<WIREGUARD_OPEN_ADAPTER_FUNC *>(GetProcAddress(api.module, "WireGuardOpenAdapter"));
+      api.GetConfiguration = reinterpret_cast<WIREGUARD_GET_CONFIGURATION_FUNC *>(GetProcAddress(api.module, "WireGuardGetConfiguration"));
+      api.CloseAdapter = reinterpret_cast<WIREGUARD_CLOSE_ADAPTER_FUNC *>(GetProcAddress(api.module, "WireGuardCloseAdapter"));
+      return api.OpenAdapter && api.GetConfiguration && api.CloseAdapter;
+    }
+
+    inline bool QueryWireGuardStats(const std::wstring &adapter_name, long long &out_rx, long long &out_tx, long long &out_handshake_ms)
+    {
+      out_rx = 0;
+      out_tx = 0;
+      out_handshake_ms = 0;
+
+      WireGuardApi api;
+      if (!LoadWireGuardApi(api))
+      {
+        return false;
+      }
+
+      WIREGUARD_ADAPTER_HANDLE adapter = api.OpenAdapter(adapter_name.c_str());
+      if (adapter == NULL)
+      {
+        return false;
+      }
+
+      DWORD alloc_bytes = sizeof(WIREGUARD_INTERFACE) + 64 * 1024;
+      std::vector<unsigned char> buffer(alloc_bytes);
+      DWORD bytes = alloc_bytes;
+      BOOL ok = api.GetConfiguration(adapter, reinterpret_cast<WIREGUARD_INTERFACE *>(buffer.data()), &bytes);
+      if (!ok && GetLastError() == ERROR_MORE_DATA)
+      {
+        buffer.resize(bytes);
+        ok = api.GetConfiguration(adapter, reinterpret_cast<WIREGUARD_INTERFACE *>(buffer.data()), &bytes);
+      }
+      if (!ok)
+      {
+        api.CloseAdapter(adapter);
+        return false;
+      }
+
+      auto *config = reinterpret_cast<WIREGUARD_INTERFACE *>(buffer.data());
+      unsigned char *cursor = reinterpret_cast<unsigned char *>(config) + sizeof(WIREGUARD_INTERFACE);
+      unsigned long long max_handshake_100ns = 0ULL;
+      unsigned long long sum_rx = 0ULL;
+      unsigned long long sum_tx = 0ULL;
+      for (DWORD i = 0; i < config->PeersCount; ++i)
+      {
+        auto *peer = reinterpret_cast<WIREGUARD_PEER *>(cursor);
+        sum_tx += peer->TxBytes;
+        sum_rx += peer->RxBytes;
+        if (peer->LastHandshake > max_handshake_100ns)
+        {
+          max_handshake_100ns = peer->LastHandshake;
+        }
+        cursor += sizeof(WIREGUARD_PEER) + peer->AllowedIPsCount * sizeof(WIREGUARD_ALLOWED_IP);
+      }
+
+      out_rx = static_cast<long long>(sum_rx);
+      out_tx = static_cast<long long>(sum_tx);
+      out_handshake_ms = filetime100nsToUnixMs(max_handshake_100ns);
+      api.CloseAdapter(adapter);
+      return true;
+    }
+  } // namespace
+
+  void ServiceControl::StartPolling()
+  {
+    if (poll_running_.exchange(true))
+    {
+      return;
+    }
+    poll_thread_ = std::thread([this]() { this->PollLoop(); });
+  }
+
+  void ServiceControl::StopPolling()
+  {
+    if (!poll_running_.exchange(false))
+    {
+      return;
+    }
+    if (poll_thread_.joinable())
+    {
+      poll_thread_.join();
+    }
+  }
+
+  void ServiceControl::PollLoop()
+  {
+    while (poll_running_.load())
+    {
+      try
+      {
+        std::string state = GetStatus() == "connected" ? "UP" : "DOWN";
+        long long rx = 0, tx = 0, hs = 0;
+        QueryWireGuardStats(service_name_, rx, tx, hs);
+        EmitState(WideToAnsi(service_name_), state, tx, rx, hs);
+      }
+      catch (...)
+      {
+        // Ignore errors and keep polling
+      }
+      Sleep(1000);
+    }
   }
 
 } // namespace wireguard_flutter
