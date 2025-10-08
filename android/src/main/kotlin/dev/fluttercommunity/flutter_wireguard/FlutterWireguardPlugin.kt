@@ -48,7 +48,8 @@ class FlutterWireguardPlugin : FlutterPlugin, MethodCallHandler, ActivityAware, 
                                         "name" to name,
                                         "state" to status.state.toString(),
                                         "rx" to status.rx,
-                                        "tx" to status.tx
+                                        "tx" to status.tx,
+                                        "handshake" to status.handshake
                                 ))
                             }
                         }
@@ -92,7 +93,8 @@ class FlutterWireguardPlugin : FlutterPlugin, MethodCallHandler, ActivityAware, 
                             "name" to status.name,
                             "state" to status.state.toString(),
                             "rx" to status.rx,
-                            "tx" to status.tx
+                            "tx" to status.tx,
+                            "handshake" to status.handshake
                     ))
                 }
             }
