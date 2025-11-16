@@ -8,7 +8,12 @@ import Cocoa
 
 public class FlutterWireguardPlugin: NSObject, FlutterPlugin {
   public static func register(with registrar: FlutterPluginRegistrar) {
-    let channel = FlutterMethodChannel(name: "flutter_wireguard", binaryMessenger: registrar.messenger())
+    #if os(iOS)
+    let messenger = registrar.messenger()
+    #else
+    let messenger = registrar.messenger
+    #endif
+    let channel = FlutterMethodChannel(name: "flutter_wireguard", binaryMessenger: messenger)
     let instance = FlutterWireguardPlugin()
     registrar.addMethodCallDelegate(instance, channel: channel)
   }
@@ -24,5 +29,13 @@ public class FlutterWireguardPlugin: NSObject, FlutterPlugin {
     default:
       result(FlutterMethodNotImplemented)
     }
+  }
+}
+
+// macOS registrant expects `WireguardFlutterPlugin` per pubspec.yaml.
+// Provide a forwarding class to keep iOS/macOS shared source working.
+public class WireguardFlutterPlugin: NSObject, FlutterPlugin {
+  public static func register(with registrar: FlutterPluginRegistrar) {
+    FlutterWireguardPlugin.register(with: registrar)
   }
 }

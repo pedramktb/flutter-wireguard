@@ -9,6 +9,8 @@
 
 #include <string>
 #include <memory>
+#include <thread>
+#include <atomic>
 
 namespace wireguard_flutter
 {
@@ -30,9 +32,16 @@ namespace wireguard_flutter
     void CreateAndStart(CreateArgs args);
     void Stop();
     std::string GetStatus();
-    void RegisterListener(std::unique_ptr<flutter::EventSink<flutter::EncodableMap>> &&events);
+    void RegisterListener(std::unique_ptr<flutter::EventSink<flutter::EncodableValue>> &&events);
     void UnregisterListener();
-    void EmitState(std::string state);
+    void EmitState(std::string name, std::string state, long long tx, long long rx, long long handshake);
+
+  private:
+    std::atomic<bool> poll_running_{false};
+    std::thread poll_thread_;
+    void StartPolling();
+    void StopPolling();
+    void PollLoop();
   };
 
 } // namespace wireguard_flutter
