@@ -53,4 +53,4 @@ android {
        // uncomment this for access to the Flutter API in IDE for syntax highlighting of Flutter classes
        // implementation files('libs/flutter.jar')
     }
-}
+} 
