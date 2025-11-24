@@ -9,7 +9,7 @@ buildscript {
     }
 
     dependencies {
-        classpath("com.android.tools.build:gradle:8.7.3")
+        classpath("com.android.tools.build:gradle:8.11.1")
         classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlin_version")
     }
 }
@@ -50,7 +50,5 @@ android {
     dependencies {
         implementation("com.wireguard.android:tunnel:1.0.20250531")
         implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2")
-       // uncomment this for access to the Flutter API in IDE for syntax highlighting of Flutter classes
-       // implementation files('libs/flutter.jar')
     }
 } 
