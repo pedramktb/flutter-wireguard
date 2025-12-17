@@ -23,17 +23,28 @@ namespace wireguard_flutter
   {
   private:
     std::string message_;
+    std::string formatted_message_;
     unsigned long error_code_;
 
-  public:
-    explicit ServiceControlException(const std::string &msg) : message_(msg), error_code_(0) {}
+    void build_formatted_message()
+    {
+      formatted_message_ = message_ + " (" + std::to_string(error_code_) + ")";
+    }
 
-    ServiceControlException(const std::string &msg, unsigned long errc) : message_(msg), error_code_(errc) {}
+  public:
+    explicit ServiceControlException(const std::string &msg) : message_(msg), error_code_(0)
+    {
+      build_formatted_message();
+    }
+
+    ServiceControlException(const std::string &msg, unsigned long errc) : message_(msg), error_code_(errc)
+    {
+      build_formatted_message();
+    }
 
     const char *what() const noexcept override
     {
-      std::string s = message_ + " (" + std::to_string(error_code_) + ")";
-      return s.c_str();
+      return formatted_message_.c_str();
     }
 
     unsigned long GetErrorCode() const noexcept
