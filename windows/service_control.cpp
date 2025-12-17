@@ -10,6 +10,7 @@
 
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 #include "utils.h"
 #include "wireguard.h"
@@ -113,7 +114,7 @@ namespace wireguard_flutter
     {
       CloseServiceHandle(service);
       CloseServiceHandle(service_manager);
-      EmitState(this->service_name_, "UP", 0, 0, 0);
+      EmitState(WideToUtf8(this->service_name_), "UP", 0, 0, 0);
       std::cout << "wireguard_flutter: Service is already running" << GetLastError() << std::endl;
       return;
     }
@@ -169,7 +170,7 @@ namespace wireguard_flutter
       }
     }
 
-    EmitState(this->service_name_, "UP", 0, 0, 0);
+    EmitState(WideToUtf8(this->service_name_), "UP", 0, 0, 0);
 
     CloseServiceHandle(service);
     CloseServiceHandle(service_manager);
@@ -201,7 +202,7 @@ namespace wireguard_flutter
     }
     if (service_status.dwCurrentState == SERVICE_STOPPED)
     {
-      EmitState(this->service_name_, "DOWN", 0, 0, 0);
+      EmitState(WideToUtf8(this->service_name_), "DOWN", 0, 0, 0);
       CloseServiceHandle(service);
       CloseServiceHandle(service_manager);
       return;
@@ -233,7 +234,7 @@ namespace wireguard_flutter
 
       if (service_status.dwCurrentState == SERVICE_STOPPED)
       {
-        EmitState(this->service_name_, "DOWN", 0, 0, 0);
+        EmitState(WideToUtf8(this->service_name_), "DOWN", 0, 0, 0);
         CloseServiceHandle(service);
         CloseServiceHandle(service_manager);
         return;
@@ -270,7 +271,7 @@ namespace wireguard_flutter
 
       if (service_status.dwCurrentState == SERVICE_STOPPED)
       {
-        EmitState(this->service_name_, "DOWN", 0, 0, 0);
+        EmitState(WideToUtf8(this->service_name_), "DOWN", 0, 0, 0);
         CloseServiceHandle(service);
         CloseServiceHandle(service_manager);
         return;

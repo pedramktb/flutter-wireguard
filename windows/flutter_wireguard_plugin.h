@@ -16,25 +16,25 @@
 namespace flutter_wireguard
 {
 
-    class WireguardFlutterPlugin : public flutter::Plugin
+    class FlutterWireguardPlugin : public flutter::Plugin
     {
     public:
         static void RegisterWithRegistrar(flutter::PluginRegistrarWindows *registrar);
 
-        WireguardFlutterPlugin();
+        FlutterWireguardPlugin();
 
-        virtual ~WireguardFlutterPlugin();
+        virtual ~FlutterWireguardPlugin();
 
         // Disallow copy and assign.
-        WireguardFlutterPlugin(const WireguardFlutterPlugin &) = delete;
-        WireguardFlutterPlugin &operator=(const WireguardFlutterPlugin &) = delete;
+        FlutterWireguardPlugin(const FlutterWireguardPlugin &) = delete;
+        FlutterWireguardPlugin &operator=(const FlutterWireguardPlugin &) = delete;
 
     private:
         // Called when a method is called on this plugin's channel from Dart.
         void HandleMethodCall(const flutter::MethodCall<flutter::EncodableValue> &method_call,
                               std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result);
 
-        std::unique_ptr<ServiceControl> tunnel_service_;
+        std::unique_ptr<wireguard_flutter::ServiceControl> tunnel_service_;
         std::unique_ptr<flutter::EventSink<flutter::EncodableValue>> events_;
 
         std::unique_ptr<flutter::StreamHandlerError<flutter::EncodableValue>> OnListen(
