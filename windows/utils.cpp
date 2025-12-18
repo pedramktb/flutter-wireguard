@@ -26,33 +26,65 @@ namespace wireguard_flutter
 
   std::string WideToUtf8(const std::wstring &wstr)
   {
-    int size_needed = WideCharToMultiByte(CP_UTF8, 0, &wstr[0], (int)wstr.size(), NULL, 0, NULL, NULL);
-    std::string strTo(size_needed, 0);
-    WideCharToMultiByte(CP_UTF8, 0, &wstr[0], (int)wstr.size(), &strTo[0], size_needed, NULL, NULL);
+    if (wstr.empty())
+    {
+      return std::string();
+    }
+    int size_needed = WideCharToMultiByte(CP_UTF8, 0, wstr.data(), static_cast<int>(wstr.size()), NULL, 0, NULL, NULL);
+    if (size_needed <= 0)
+    {
+      return std::string();
+    }
+    std::string strTo(static_cast<size_t>(size_needed), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, wstr.data(), static_cast<int>(wstr.size()), strTo.data(), size_needed, NULL, NULL);
     return strTo;
   }
 
   std::wstring Utf8ToWide(const std::string &str)
   {
-    int size_needed = MultiByteToWideChar(CP_UTF8, 0, &str[0], (int)str.size(), NULL, 0);
-    std::wstring wstrTo(size_needed, 0);
-    MultiByteToWideChar(CP_UTF8, 0, &str[0], (int)str.size(), &wstrTo[0], size_needed);
+    if (str.empty())
+    {
+      return std::wstring();
+    }
+    int size_needed = MultiByteToWideChar(CP_UTF8, 0, str.data(), static_cast<int>(str.size()), NULL, 0);
+    if (size_needed <= 0)
+    {
+      return std::wstring();
+    }
+    std::wstring wstrTo(static_cast<size_t>(size_needed), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, str.data(), static_cast<int>(str.size()), wstrTo.data(), size_needed);
     return wstrTo;
   }
 
   std::string WideToAnsi(const std::wstring &wstr)
   {
-    int size_needed = WideCharToMultiByte(CP_ACP, 0, &wstr[0], -1, NULL, 0, NULL, NULL);
-    std::string strTo(size_needed, 0);
-    WideCharToMultiByte(CP_ACP, 0, &wstr[0], (int)wstr.size(), &strTo[0], size_needed, NULL, NULL);
+    if (wstr.empty())
+    {
+      return std::string();
+    }
+    int size_needed = WideCharToMultiByte(CP_ACP, 0, wstr.data(), static_cast<int>(wstr.size()), NULL, 0, NULL, NULL);
+    if (size_needed <= 0)
+    {
+      return std::string();
+    }
+    std::string strTo(static_cast<size_t>(size_needed), '\0');
+    WideCharToMultiByte(CP_ACP, 0, wstr.data(), static_cast<int>(wstr.size()), strTo.data(), size_needed, NULL, NULL);
     return strTo;
   }
 
   std::wstring AnsiToWide(const std::string &str)
   {
-    int size_needed = MultiByteToWideChar(CP_ACP, 0, &str[0], (int)str.size(), NULL, 0);
-    std::wstring wstrTo(size_needed, 0);
-    MultiByteToWideChar(CP_ACP, 0, &str[0], (int)str.size(), &wstrTo[0], size_needed);
+    if (str.empty())
+    {
+      return std::wstring();
+    }
+    int size_needed = MultiByteToWideChar(CP_ACP, 0, str.data(), static_cast<int>(str.size()), NULL, 0);
+    if (size_needed <= 0)
+    {
+      return std::wstring();
+    }
+    std::wstring wstrTo(static_cast<size_t>(size_needed), L'\0');
+    MultiByteToWideChar(CP_ACP, 0, str.data(), static_cast<int>(str.size()), wstrTo.data(), size_needed);
     return wstrTo;
   }
 
@@ -60,7 +92,7 @@ namespace wireguard_flutter
   {
     std::string s(msg);
     std::wstring ws = Utf8ToWide(s);
-    MessageBox(NULL, &ws[0], L"Debug", MB_OK);
+    MessageBox(NULL, ws.c_str(), L"Debug", MB_OK);
   }
 
 } // namespace wireguard_flutter

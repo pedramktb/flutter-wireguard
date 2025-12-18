@@ -512,7 +512,9 @@ namespace wireguard_flutter
         std::string state = GetStatus() == "connected" ? "UP" : "DOWN";
         long long rx = 0, tx = 0, hs = 0;
         QueryWireGuardStats(service_name_, rx, tx, hs);
-        EmitState(WideToAnsi(service_name_), state, tx, rx, hs);
+        // Platform channels expect UTF-8 strings. Using ACP/ANSI here can produce
+        // non-UTF8 byte sequences which crash Dart decoding with FormatException.
+        EmitState(WideToUtf8(service_name_), state, tx, rx, hs);
       }
       catch (...)
       {
