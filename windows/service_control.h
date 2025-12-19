@@ -28,6 +28,7 @@ namespace wireguard_flutter
     std::unique_ptr<flutter::EventSink<flutter::EncodableValue>> events_;
 
     ServiceControl(const std::wstring service_name) : service_name_(service_name) {}
+    ~ServiceControl() { StopPolling(); }
 
     void CreateAndStart(CreateArgs args);
     void Stop();

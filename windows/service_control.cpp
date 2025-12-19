@@ -61,11 +61,9 @@ namespace wireguard_flutter
       throw ServiceControlException("Failed to open service manager", GetLastError());
     }
 
-    SC_HANDLE service = OpenService(service_manager, &service_name_[0], SC_MANAGER_ALL_ACCESS);
+    SC_HANDLE service = OpenService(service_manager, &service_name_[0], SERVICE_ALL_ACCESS);
     if (service == NULL)
     {
-      CloseServiceHandle(service);
-
       service = CreateService(service_manager,                  // SCM database
                               &service_name_[0],                // name of service
                               &service_name_[0],                // service name to display
@@ -308,11 +306,10 @@ namespace wireguard_flutter
       throw ServiceControlException("Failed to open service manager", GetLastError());
     }
 
-    SC_HANDLE service = OpenService(service_manager, &service_name_[0], SC_MANAGER_ALL_ACCESS);
+    SC_HANDLE service = OpenService(service_manager, &service_name_[0], SERVICE_QUERY_STATUS);
     if (service == NULL)
     {
       CloseServiceHandle(service_manager);
-      CloseServiceHandle(service);
       return "disconnected";
     }
 
@@ -331,8 +328,14 @@ namespace wireguard_flutter
       return "denied";
     }
 
-    CloseServiceHandle(service);
-    CloseServiceHandle(service_manager);
+    if (service != NULL)
+    {
+      CloseServiceHandle(service);
+    }
+    if (service_manager != NULL)
+    {
+      CloseServiceHandle(service_manager);
+    }
 
     if (ssStatus.dwCurrentState == SERVICE_STOPPED || ssStatus.dwCurrentState == SERVICE_PAUSED)
     {
