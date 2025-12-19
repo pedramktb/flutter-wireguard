@@ -148,35 +148,63 @@ namespace wireguard_flutter
       throw ServiceControlException("Failed to start the service", GetLastError());
     }
 
-    DWORD dwWaitTime;
-    dwWaitTime = ssStatus.dwWaitHint / 10;
-    if (dwWaitTime < 1000)
-      dwWaitTime = 1000;
-    else if (dwWaitTime > 1500)
-      dwWaitTime = 1500;
-    Sleep(dwWaitTime);
-
-    // If the service is too old, it may fail to start and needs to be recreated.
-    // This is done only once. If it fails twice, the error is propagated.
-    if (GetStatus() == "disconnected")
+    // Wait for the service to reach RUNNING, or fail with a useful exit code.
+    // The previous implementation only waited ~1s based on a stale wait hint,
+    // then checked GetStatus() which could report "disconnected" transiently.
+    DWORD start_time = GetTickCount();
+    const DWORD start_timeout_ms = 15000;
+    while (true)
     {
-      if (args.first_time)
+      SERVICE_STATUS_PROCESS ssp;
+      DWORD bytes_needed2 = 0;
+      if (!QueryServiceStatusEx(
+              service,
+              SC_STATUS_PROCESS_INFO,
+              (LPBYTE)&ssp,
+              sizeof(SERVICE_STATUS_PROCESS),
+              &bytes_needed2))
       {
-        std::cout << "wireguard_flutter: Trying to delete and recreate the service" << std::endl;
-        DeleteService(service);
+        const auto err = GetLastError();
         CloseServiceHandle(service);
         CloseServiceHandle(service_manager);
-        args.first_time = false;
-        CreateAndStart(args);
-        return;
+        throw ServiceControlException("Failed to query service status after start", err);
       }
-      else
+
+      if (ssp.dwCurrentState == SERVICE_RUNNING)
+      {
+        break;
+      }
+
+      if (ssp.dwCurrentState == SERVICE_STOPPED)
+      {
+        if (args.first_time)
+        {
+          std::cout << "wireguard_flutter: Service stopped after start; deleting and recreating" << std::endl;
+          DeleteService(service);
+          CloseServiceHandle(service);
+          CloseServiceHandle(service_manager);
+          args.first_time = false;
+          CreateAndStart(args);
+          return;
+        }
+
+        const unsigned long win32_exit = ssp.dwWin32ExitCode;
+        const unsigned long svc_exit = ssp.dwServiceSpecificExitCode;
+        std::cout << "wireguard_flutter: Service stopped after start (win32_exit=" << win32_exit
+                  << ", service_exit=" << svc_exit << ")" << std::endl;
+        CloseServiceHandle(service);
+        CloseServiceHandle(service_manager);
+        throw ServiceControlException("WireGuard service stopped after start", win32_exit != 0 ? win32_exit : svc_exit);
+      }
+
+      if (GetTickCount() - start_time > start_timeout_ms)
       {
         CloseServiceHandle(service);
         CloseServiceHandle(service_manager);
-        std::cout << "wireguard_flutter: Failed to start the service" << GetLastError() << std::endl;
-        throw ServiceControlException("Failed to start the service", GetLastError());
+        throw ServiceControlException("WireGuard service start timed out");
       }
+
+      Sleep(250);
     }
 
     EmitState(WideToUtf8(this->service_name_), "UP", 0, 0, 0);
