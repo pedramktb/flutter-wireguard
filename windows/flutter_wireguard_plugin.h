@@ -16,18 +16,18 @@
 namespace flutter_wireguard
 {
 
-    class WireguardFlutterPlugin : public flutter::Plugin
+    class FlutterWireguardPlugin : public flutter::Plugin
     {
     public:
         static void RegisterWithRegistrar(flutter::PluginRegistrarWindows *registrar);
 
-        WireguardFlutterPlugin();
+        FlutterWireguardPlugin();
 
-        virtual ~WireguardFlutterPlugin();
+        virtual ~FlutterWireguardPlugin();
 
         // Disallow copy and assign.
-        WireguardFlutterPlugin(const WireguardFlutterPlugin &) = delete;
-        WireguardFlutterPlugin &operator=(const WireguardFlutterPlugin &) = delete;
+        FlutterWireguardPlugin(const FlutterWireguardPlugin &) = delete;
+        FlutterWireguardPlugin &operator=(const FlutterWireguardPlugin &) = delete;
 
     private:
         // Called when a method is called on this plugin's channel from Dart.

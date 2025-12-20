@@ -1,6 +1,6 @@
 #include <string>
 
-namespace wireguard_flutter
+namespace flutter_wireguard
 {
 
     std::wstring WriteConfigToTempFile(std::string config);

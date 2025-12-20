@@ -13,6 +13,7 @@
 
 #include <memory>
 #include <sstream>
+#include <iostream>
 
 #include "config_writer.h"
 #include "service_control.h"
@@ -131,19 +132,19 @@ namespace flutter_wireguard
   } // namespace
 
   // static
-  void WireguardFlutterPlugin::RegisterWithRegistrar(PluginRegistrarWindows *registrar)
+  void FlutterWireguardPlugin::RegisterWithRegistrar(PluginRegistrarWindows *registrar)
   {
-    auto channel = make_unique<MethodChannel<EncodableValue>>(
+    auto channel = std::make_unique<MethodChannel<EncodableValue>>(
         registrar->messenger(), "dev.fluttercommunity.flutter_wireguard/methodChannel", &StandardMethodCodec::GetInstance());
-    auto eventChannel = make_unique<EventChannel<EncodableValue>>(
+    auto eventChannel = std::make_unique<EventChannel<EncodableValue>>(
         registrar->messenger(), "dev.fluttercommunity.flutter_wireguard/eventChannel", &StandardMethodCodec::GetInstance());
 
-    auto plugin = make_unique<WireguardFlutterPlugin>();
+    auto plugin = std::make_unique<FlutterWireguardPlugin>();
 
     channel->SetMethodCallHandler([plugin_pointer = plugin.get()](const auto &call, auto result)
                                   { plugin_pointer->HandleMethodCall(call, move(result)); });
 
-    auto eventsHandler = make_unique<StreamHandlerFunctions<EncodableValue>>(
+    auto eventsHandler = std::make_unique<StreamHandlerFunctions<EncodableValue>>(
         [plugin_pointer = plugin.get()](
             const EncodableValue *arguments,
             unique_ptr<EventSink<EncodableValue>> &&events)
@@ -162,40 +163,37 @@ namespace flutter_wireguard
     registrar->AddPlugin(move(plugin));
   }
 
-  WireguardFlutterPlugin::WireguardFlutterPlugin() {}
+  FlutterWireguardPlugin::FlutterWireguardPlugin() {}
 
-  WireguardFlutterPlugin::~WireguardFlutterPlugin() {}
+  FlutterWireguardPlugin::~FlutterWireguardPlugin() {}
 
-  void WireguardFlutterPlugin::HandleMethodCall(const MethodCall<EncodableValue> &call,
+  void FlutterWireguardPlugin::HandleMethodCall(const MethodCall<EncodableValue> &call,
                                                 unique_ptr<MethodResult<EncodableValue>> result)
   {
-    const auto *args = get_if<EncodableMap>(call.arguments());
+    const auto *args = std::get_if<EncodableMap>(call.arguments());
 
     if (call.method_name() == "start")
     {
+      const auto *name_ptr = std::get_if<std::string>(ValueOrNull(*args, "name"));
+      if (name_ptr == nullptr)
+      {
+        result->Error("Argument 'name' is required");
+        return;
+      }
+
       auto tunnel_service = this->tunnel_service_.get();
       if (tunnel_service == nullptr)
       {
-        const auto *name = get_if<string>(ValueOrNull(*args, "name"));
-        if (name == NULL)
-        {
-          result->Error("Argument 'name' is required");
-          return;
-        }
-        if (this->tunnel_service_ != nullptr)
-        {
-          this->tunnel_service_->service_name_ = Utf8ToWide(*name);
-        }
-        else
-        {
-          this->tunnel_service_ = make_unique<ServiceControl>(Utf8ToWide(*name));
-          this->tunnel_service_->RegisterListener(move(events_));
-        }
-
+        this->tunnel_service_ = std::make_unique<ServiceControl>(Utf8ToWide(*name_ptr));
+        this->tunnel_service_->RegisterListener(std::move(events_));
         tunnel_service = this->tunnel_service_.get();
       }
+      else
+      {
+        tunnel_service->service_name_ = Utf8ToWide(*name_ptr);
+      }
 
-      const auto *config = get_if<string>(ValueOrNull(*args, "config"));
+      const auto *config = std::get_if<std::string>(ValueOrNull(*args, "config"));
       if (config == NULL)
       {
         result->Error("Argument 'config' is required");
@@ -221,7 +219,7 @@ namespace flutter_wireguard
       service_exec_builder << current_exec_dir << "\\wireguard_svc.exe" << L" -service"
                            << L" -config-file=\"" << wg_config_filename << "\"";
       wstring service_exec = service_exec_builder.str();
-      cout << "Starting service with command line: " << WideToAnsi(service_exec) << endl;
+      std::cout << "Starting service with command line: " << WideToUtf8(service_exec) << std::endl;
       try
       {
         CreateArgs csa;
@@ -243,25 +241,18 @@ namespace flutter_wireguard
     }
     else if (call.method_name() == "stop")
     {
+      const auto *name_ptr = std::get_if<std::string>(ValueOrNull(*args, "name"));
+      if (name_ptr == nullptr)
+      {
+        result->Error("Argument 'name' is required");
+        return;
+      }
+
       auto tunnel_service = this->tunnel_service_.get();
       if (tunnel_service == nullptr)
       {
-        const auto *name = get_if<string>(ValueOrNull(*args, "name"));
-        if (name == NULL)
-        {
-          result->Error("Argument 'name' is required");
-          return;
-        }
-        if (this->tunnel_service_ != nullptr)
-        {
-          this->tunnel_service_->service_name_ = Utf8ToWide(*name);
-        }
-        else
-        {
-          this->tunnel_service_ = make_unique<ServiceControl>(Utf8ToWide(*name));
-          this->tunnel_service_->RegisterListener(move(events_));
-        }
-
+        this->tunnel_service_ = std::make_unique<ServiceControl>(Utf8ToWide(*name_ptr));
+        this->tunnel_service_->RegisterListener(std::move(events_));
         tunnel_service = this->tunnel_service_.get();
       }
 
@@ -279,47 +270,37 @@ namespace flutter_wireguard
     }
     else if (call.method_name() == "status")
     {
+      const auto *name_ptr = std::get_if<std::string>(ValueOrNull(*args, "name"));
+      if (name_ptr == nullptr)
+      {
+        result->Error("Argument 'name' is required");
+        return;
+      }
+
       auto tunnel_service = this->tunnel_service_.get();
       if (tunnel_service == nullptr)
       {
-        const auto *name = get_if<string>(ValueOrNull(*args, "name"));
-        if (name == NULL)
-        {
-          result->Error("Argument 'name' is required");
-          return;
-        }
-        if (this->tunnel_service_ != nullptr)
-        {
-          this->tunnel_service_->service_name_ = Utf8ToWide(*name);
-        }
-        else
-        {
-          this->tunnel_service_ = make_unique<ServiceControl>(Utf8ToWide(*name));
-          this->tunnel_service_->RegisterListener(move(events_));
-        }
-
+        this->tunnel_service_ = std::make_unique<ServiceControl>(Utf8ToWide(*name_ptr));
+        this->tunnel_service_->RegisterListener(std::move(events_));
         tunnel_service = this->tunnel_service_.get();
       }
 
-      string state = tunnel_service->GetStatus() == "connected" ? "UP" : "DOWN";
+      std::string state = tunnel_service->GetStatus() == "connected" ? "UP" : "DOWN";
 
       long long tx = 0, rx = 0, handshake = 0;
 
       // Try to read real-time statistics from the WireGuard driver
       try
       {
-        if (name != nullptr)
-        {
-          std::wstring adapter_name = Utf8ToWide(*name);
-          QueryWireGuardStats(adapter_name, rx, tx, handshake);
-        }
+        std::wstring adapter_name = Utf8ToWide(*name_ptr);
+        QueryWireGuardStats(adapter_name, rx, tx, handshake);
       }
       catch (...)
       {
         // Best-effort; leave zeros on failure
       }
 
-      flutter::EncodableMap map = {{flutter::EncodableValue("name"), flutter::EncodableValue(name)},
+      flutter::EncodableMap map = {{flutter::EncodableValue("name"), flutter::EncodableValue(*name_ptr)},
                                    {flutter::EncodableValue("state"), flutter::EncodableValue(state)},
                                    {flutter::EncodableValue("tx"), flutter::EncodableValue(tx)},
                                    {flutter::EncodableValue("rx"), flutter::EncodableValue(rx)},
@@ -331,7 +312,7 @@ namespace flutter_wireguard
     result->NotImplemented();
   }
 
-  unique_ptr<StreamHandlerError<EncodableValue>> WireguardFlutterPlugin::OnListen(
+  unique_ptr<StreamHandlerError<EncodableValue>> FlutterWireguardPlugin::OnListen(
       const EncodableValue *arguments,
       unique_ptr<EventSink<EncodableValue>> &&events)
   {
@@ -346,7 +327,7 @@ namespace flutter_wireguard
     return nullptr;
   }
 
-  unique_ptr<StreamHandlerError<EncodableValue>> WireguardFlutterPlugin::OnCancel(
+  unique_ptr<StreamHandlerError<EncodableValue>> FlutterWireguardPlugin::OnCancel(
       const EncodableValue *arguments)
   {
     events_ = nullptr;

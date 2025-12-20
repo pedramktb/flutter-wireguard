@@ -4,7 +4,7 @@
 #include <stdexcept>
 #include <string>
 
-namespace wireguard_flutter
+namespace flutter_wireguard
 {
 
   std::wstring WriteConfigToTempFile(std::string config)
@@ -43,4 +43,4 @@ namespace wireguard_flutter
     return temp_filename;
   }
 
-}
+} // namespace flutter_wireguard
