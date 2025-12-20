@@ -361,6 +361,7 @@ namespace flutter_wireguard
 
   void ServiceControl::EmitState(std::string name, std::string state, long long tx, long long rx, long long handshake)
   {
+    /* Disabled state emission
     if (events_ == nullptr)
     {
       return;
@@ -371,6 +372,7 @@ namespace flutter_wireguard
                                  {flutter::EncodableValue("rx"), flutter::EncodableValue(rx)},
                                  {flutter::EncodableValue("handshake"), flutter::EncodableValue(handshake)}};
     events_->Success(flutter::EncodableValue(map));
+    */
   }
 
   namespace
@@ -412,6 +414,7 @@ namespace flutter_wireguard
 
     inline bool QueryWireGuardStats(const std::wstring &adapter_name, long long &out_rx, long long &out_tx, long long &out_handshake_ms)
     {
+      /* Disabled stats logic
       out_rx = 0;
       out_tx = 0;
       out_handshake_ms = 0;
@@ -464,17 +467,23 @@ namespace flutter_wireguard
       out_tx = static_cast<long long>(sum_tx);
       out_handshake_ms = filetime100nsToUnixMs(max_handshake_100ns);
       api.CloseAdapter(adapter);
+      */
+      out_rx = 111;
+      out_tx = 222;
+      out_handshake_ms = 333;
       return true;
     }
   } // namespace
 
   void ServiceControl::StartPolling()
   {
+    /* Disabled polling start
     if (poll_running_.exchange(true))
     {
       return;
     }
     poll_thread_ = std::thread([this]() { this->PollLoop(); });
+    */
   }
 
   void ServiceControl::StopPolling()
@@ -491,6 +500,7 @@ namespace flutter_wireguard
 
   void ServiceControl::PollLoop()
   {
+    /* Disabled polling loop logic
     while (poll_running_.load())
     {
       try
@@ -508,6 +518,7 @@ namespace flutter_wireguard
       }
       Sleep(1000);
     }
+    */
   }
 
 } // namespace flutter_wireguard
