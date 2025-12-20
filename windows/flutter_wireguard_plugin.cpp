@@ -180,26 +180,24 @@ namespace flutter_wireguard
 
       if (call.method_name() == "start")
       {
+        const auto *name = get_if<string>(wireguard_flutter::ValueOrNull(*args, "name"));
+        if (name == NULL || name->empty())
+        {
+          result->Error("Argument 'name' is required");
+          return;
+        }
+
         auto tunnel_service = this->tunnel_service_.get();
         if (tunnel_service == nullptr)
         {
-          const auto *name = get_if<string>(wireguard_flutter::ValueOrNull(*args, "name"));
-          if (name == NULL)
-          {
-            result->Error("Argument 'name' is required");
-            return;
-          }
-          if (this->tunnel_service_ != nullptr)
-          {
-            this->tunnel_service_->service_name_ = wireguard_flutter::Utf8ToWide(*name);
-          }
-          else
-          {
-            this->tunnel_service_ = make_unique<wireguard_flutter::ServiceControl>(wireguard_flutter::Utf8ToWide(*name));
-            this->tunnel_service_->RegisterListener(move(events_));
-          }
-
+          this->tunnel_service_ = make_unique<wireguard_flutter::ServiceControl>(wireguard_flutter::Utf8ToWide(*name));
+          this->tunnel_service_->RegisterListener(move(events_));
           tunnel_service = this->tunnel_service_.get();
+        }
+        else
+        {
+          // Always keep the native service name in sync with Dart calls.
+          tunnel_service->service_name_ = wireguard_flutter::Utf8ToWide(*name);
         }
 
         const auto *config = get_if<string>(wireguard_flutter::ValueOrNull(*args, "config"));
@@ -224,6 +222,40 @@ namespace flutter_wireguard
         GetModuleFileName(NULL, module_filename, MAX_PATH);
         auto current_exec_dir = wstring(module_filename);
         current_exec_dir = current_exec_dir.substr(0, current_exec_dir.find_last_of(L"\\/"));
+
+        // Validate that the required bundled binaries are present next to the runner.
+        // If these are missing, the service may fail immediately and show up as a
+        // generic "VPN connection failed" error in Dart code.
+        const std::wstring svc_path = current_exec_dir + L"\\wireguard_svc.exe";
+        const std::wstring wg_dll_path = current_exec_dir + L"\\wireguard.dll";
+        const std::wstring tunnel_dll_path = current_exec_dir + L"\\tunnel.dll";
+        auto exists = [](const std::wstring &p) -> bool
+        {
+          const DWORD attr = GetFileAttributesW(p.c_str());
+          return (attr != INVALID_FILE_ATTRIBUTES) && ((attr & FILE_ATTRIBUTE_DIRECTORY) == 0);
+        };
+        if (!exists(svc_path))
+        {
+          result->Error(std::string("Missing bundled binary: wireguard_svc.exe (expected at ")
+                            .append(wireguard_flutter::WideToAnsi(svc_path))
+                            .append(")"));
+          return;
+        }
+        if (!exists(wg_dll_path))
+        {
+          result->Error(std::string("Missing bundled binary: wireguard.dll (expected at ")
+                            .append(wireguard_flutter::WideToAnsi(wg_dll_path))
+                            .append(")"));
+          return;
+        }
+        if (!exists(tunnel_dll_path))
+        {
+          result->Error(std::string("Missing bundled binary: tunnel.dll (expected at ")
+                            .append(wireguard_flutter::WideToAnsi(tunnel_dll_path))
+                            .append(")"));
+          return;
+        }
+
         wostringstream service_exec_builder;
         // Always quote the executable path (can contain spaces).
         service_exec_builder << L"\"" << current_exec_dir << "\\wireguard_svc.exe\""
@@ -252,26 +284,23 @@ namespace flutter_wireguard
       }
       else if (call.method_name() == "stop")
       {
+        const auto *name = get_if<string>(wireguard_flutter::ValueOrNull(*args, "name"));
+        if (name == NULL || name->empty())
+        {
+          result->Error("Argument 'name' is required");
+          return;
+        }
+
         auto tunnel_service = this->tunnel_service_.get();
         if (tunnel_service == nullptr)
         {
-          const auto *name = get_if<string>(wireguard_flutter::ValueOrNull(*args, "name"));
-          if (name == NULL)
-          {
-            result->Error("Argument 'name' is required");
-            return;
-          }
-          if (this->tunnel_service_ != nullptr)
-          {
-            this->tunnel_service_->service_name_ = wireguard_flutter::Utf8ToWide(*name);
-          }
-          else
-          {
-            this->tunnel_service_ = make_unique<wireguard_flutter::ServiceControl>(wireguard_flutter::Utf8ToWide(*name));
-            this->tunnel_service_->RegisterListener(move(events_));
-          }
-
+          this->tunnel_service_ = make_unique<wireguard_flutter::ServiceControl>(wireguard_flutter::Utf8ToWide(*name));
+          this->tunnel_service_->RegisterListener(move(events_));
           tunnel_service = this->tunnel_service_.get();
+        }
+        else
+        {
+          tunnel_service->service_name_ = wireguard_flutter::Utf8ToWide(*name);
         }
 
         try
@@ -289,26 +318,23 @@ namespace flutter_wireguard
       }
       else if (call.method_name() == "status")
       {
+        const auto *name = get_if<string>(wireguard_flutter::ValueOrNull(*args, "name"));
+        if (name == NULL || name->empty())
+        {
+          result->Error("Argument 'name' is required");
+          return;
+        }
+
         auto tunnel_service = this->tunnel_service_.get();
         if (tunnel_service == nullptr)
         {
-          const auto *name = get_if<string>(wireguard_flutter::ValueOrNull(*args, "name"));
-          if (name == NULL)
-          {
-            result->Error("Argument 'name' is required");
-            return;
-          }
-          if (this->tunnel_service_ != nullptr)
-          {
-            this->tunnel_service_->service_name_ = wireguard_flutter::Utf8ToWide(*name);
-          }
-          else
-          {
-            this->tunnel_service_ = make_unique<wireguard_flutter::ServiceControl>(wireguard_flutter::Utf8ToWide(*name));
-            this->tunnel_service_->RegisterListener(move(events_));
-          }
-
+          this->tunnel_service_ = make_unique<wireguard_flutter::ServiceControl>(wireguard_flutter::Utf8ToWide(*name));
+          this->tunnel_service_->RegisterListener(move(events_));
           tunnel_service = this->tunnel_service_.get();
+        }
+        else
+        {
+          tunnel_service->service_name_ = wireguard_flutter::Utf8ToWide(*name);
         }
 
         string state = tunnel_service->GetStatus() == "connected" ? "UP" : "DOWN";
@@ -316,7 +342,6 @@ namespace flutter_wireguard
         long long tx = 0, rx = 0, handshake = 0;
 
         // Try to read real-time statistics from the WireGuard driver
-        const auto *name = get_if<string>(wireguard_flutter::ValueOrNull(*args, "name"));
         try
         {
           if (name != nullptr)

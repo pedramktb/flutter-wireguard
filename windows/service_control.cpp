@@ -61,12 +61,21 @@ namespace wireguard_flutter
       throw ServiceControlException("Failed to open service manager", GetLastError());
     }
 
-    SC_HANDLE service = OpenService(service_manager, &service_name_[0], SERVICE_ALL_ACCESS);
+    if (service_name_.empty())
+    {
+      CloseServiceHandle(service_manager);
+      throw ServiceControlException("Service name is empty");
+    }
+
+    SC_HANDLE service = OpenService(service_manager, service_name_.c_str(), SERVICE_ALL_ACCESS);
     if (service == NULL)
     {
+      // Create the service with explicit dependencies if provided.
+      // NOTE: dependencies must be a double-null-terminated multi-string.
+      const wchar_t *deps = args.dependencies.empty() ? NULL : args.dependencies.c_str();
       service = CreateService(service_manager,                  // SCM database
-                              &service_name_[0],                // name of service
-                              &service_name_[0],                // service name to display
+                              service_name_.c_str(),            // name of service
+                              service_name_.c_str(),            // service name to display
                               SERVICE_ALL_ACCESS,               // desired access
                               SERVICE_WIN32_OWN_PROCESS,        // service type
                               SERVICE_DEMAND_START,             // start type
@@ -74,7 +83,7 @@ namespace wireguard_flutter
                               args.executable_and_args.c_str(), // path to service's binary
                               NULL,                             // no load ordering group
                               NULL,                             // no tag identifier
-                              NULL,                             // args.dependencies.c_str(),
+                              deps,                             // dependencies (multi-string)
                               NULL,                             // LocalSystem account
                               NULL);
       if (service == NULL)
@@ -94,7 +103,7 @@ namespace wireguard_flutter
       throw ServiceControlException("Failed to configure servivce SID type", GetLastError());
     }
 
-    SERVICE_DESCRIPTION description = {&args.description[0]};
+    SERVICE_DESCRIPTION description = {const_cast<LPWSTR>(args.description.c_str())};
     if (!ChangeServiceConfig2(service, SERVICE_CONFIG_DESCRIPTION, &description))
     {
       CloseServiceHandle(service);
@@ -116,7 +125,7 @@ namespace wireguard_flutter
       CloseServiceHandle(service);
       CloseServiceHandle(service_manager);
       std::cout << "wireguard_flutter: Failed to query service status" << GetLastError() << std::endl;
-      return;
+      throw ServiceControlException("Failed to query service status", GetLastError());
     }
 
     if (ssStatus.dwCurrentState != SERVICE_STOPPED && ssStatus.dwCurrentState != SERVICE_STOP_PENDING)
@@ -221,7 +230,13 @@ namespace wireguard_flutter
       throw ServiceControlException("Failed to open service manager", GetLastError());
     }
 
-    SC_HANDLE service = OpenService(service_manager, &service_name_[0], SERVICE_STOP | SERVICE_QUERY_STATUS);
+    if (service_name_.empty())
+    {
+      CloseServiceHandle(service_manager);
+      throw ServiceControlException("Service name is empty");
+    }
+
+    SC_HANDLE service = OpenService(service_manager, service_name_.c_str(), SERVICE_STOP | SERVICE_QUERY_STATUS);
     if (service == NULL)
     {
       CloseServiceHandle(service_manager);
@@ -334,7 +349,13 @@ namespace wireguard_flutter
       throw ServiceControlException("Failed to open service manager", GetLastError());
     }
 
-    SC_HANDLE service = OpenService(service_manager, &service_name_[0], SERVICE_QUERY_STATUS);
+    if (service_name_.empty())
+    {
+      CloseServiceHandle(service_manager);
+      return "disconnected";
+    }
+
+    SC_HANDLE service = OpenService(service_manager, service_name_.c_str(), SERVICE_QUERY_STATUS);
     if (service == NULL)
     {
       CloseServiceHandle(service_manager);
@@ -394,7 +415,17 @@ namespace wireguard_flutter
     if (events_ == nullptr)
     {
       events_ = std::move(events);
-      StartPolling();
+      // NOTE:
+      // This plugin originally started a background polling thread here to emit
+      // periodic status updates over the EventChannel (see PollLoop()).
+      //
+      // Disabled per request: background polling can be a source of crashes/
+      // race conditions depending on app lifecycle and thread affinity.
+      //
+      // Impact: Dart's `statusStream()` will no longer receive periodic updates.
+      // Consumers should call the `status` method on-demand instead.
+      //
+      // StartPolling();
     }
   }
 

@@ -152,15 +152,26 @@ namespace wireguard_flutter
 
     WCHAR temp_filename[MAX_PATH];
     UINT temp_filename_result = GetTempFileName(temp_path, L"wg_conf", 0, temp_filename);
-    wcscat_s(temp_filename, L".conf");
     if (temp_filename_result == 0)
     {
       throw std::runtime_error(ErrorWithCode("could not get temporary file name", GetLastError()));
     }
+    // GetTempFileName creates the file. We'll create our own ".conf" file name,
+    // but make sure to clean up the original ".tmp" file to avoid leaking temp files.
+    WCHAR original_temp_filename[MAX_PATH];
+    wcscpy_s(original_temp_filename, temp_filename);
 
-    HANDLE temp_file = CreateFile(temp_filename, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    errno_t cat_result = wcscat_s(temp_filename, L".conf");
+    if (cat_result != 0)
+    {
+      DeleteFileW(original_temp_filename);
+      throw std::runtime_error("could not build temporary config file name");
+    }
+
+    HANDLE temp_file = CreateFile(temp_filename, GENERIC_WRITE, FILE_SHARE_READ, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
     if (temp_file == INVALID_HANDLE_VALUE)
     {
+      DeleteFileW(original_temp_filename);
       throw std::runtime_error(ErrorWithCode("unable to create temporary file", GetLastError()));
     }
 
@@ -170,13 +181,26 @@ namespace wireguard_flutter
     DWORD bytes_written;
     if (!WriteFile(temp_file, normalized.c_str(), static_cast<DWORD>(normalized.length()), &bytes_written, NULL))
     {
-      throw std::runtime_error(ErrorWithCode("could not write temporary config file", GetLastError()));
+      const auto err = GetLastError();
+      CloseHandle(temp_file);
+      DeleteFileW(original_temp_filename);
+      throw std::runtime_error(ErrorWithCode("could not write temporary config file", err));
+    }
+    if (bytes_written != static_cast<DWORD>(normalized.length()))
+    {
+      CloseHandle(temp_file);
+      DeleteFileW(original_temp_filename);
+      throw std::runtime_error("could not write temporary config file (partial write)");
     }
 
     if (!CloseHandle(temp_file))
     {
-      throw std::runtime_error(ErrorWithCode("unable to close temporary file", GetLastError()));
+      const auto err = GetLastError();
+      DeleteFileW(original_temp_filename);
+      throw std::runtime_error(ErrorWithCode("unable to close temporary file", err));
     }
+
+    DeleteFileW(original_temp_filename);
     return temp_filename;
   }
 
