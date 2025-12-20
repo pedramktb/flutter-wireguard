@@ -49,11 +49,9 @@ namespace flutter_wireguard
       throw ServiceControlException("Failed to open service manager", GetLastError());
     }
 
-    SC_HANDLE service = OpenService(service_manager, &service_name_[0], SC_MANAGER_ALL_ACCESS);
+    SC_HANDLE service = OpenService(service_manager, &service_name_[0], SERVICE_ALL_ACCESS);
     if (service == NULL)
     {
-      CloseServiceHandle(service);
-
       service = CreateService(service_manager,                  // SCM database
                               &service_name_[0],                // name of service
                               &service_name_[0],                // service name to display
@@ -500,7 +498,9 @@ namespace flutter_wireguard
         std::string state = GetStatus() == "connected" ? "UP" : "DOWN";
         long long rx = 0, tx = 0, hs = 0;
         QueryWireGuardStats(service_name_, rx, tx, hs);
-        EmitState(WideToAnsi(service_name_), state, tx, rx, hs);
+        // TODO: EmitState is not thread-safe and causes crashes when called from background thread.
+        // For now, we only emit state on connect/disconnect from the main thread.
+        // EmitState(WideToUtf8(service_name_), state, tx, rx, hs);
       }
       catch (...)
       {

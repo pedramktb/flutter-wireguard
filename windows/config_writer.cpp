@@ -7,7 +7,7 @@
 namespace flutter_wireguard
 {
 
-  std::wstring WriteConfigToTempFile(std::string config)
+  std::wstring WriteConfigToTempFile(std::string name, std::string config)
   {
     WCHAR temp_path[MAX_PATH];
     DWORD temp_path_len = GetTempPath(MAX_PATH, temp_path);
@@ -16,15 +16,10 @@ namespace flutter_wireguard
       throw std::runtime_error("could not get temporary dir: " + GetLastError());
     }
 
-    WCHAR temp_filename[MAX_PATH];
-    UINT temp_filename_result = GetTempFileName(temp_path, L"wg_conf", 0, temp_filename);
-    wcscat_s(temp_filename, L".conf");
-    if (temp_filename_result == 0)
-    {
-      throw std::runtime_error("could not get temporary file name: " + GetLastError());
-    }
+    std::wstring wname = Utf8ToWide(name);
+    std::wstring temp_filename = std::wstring(temp_path) + wname + L".conf";
 
-    HANDLE temp_file = CreateFile(temp_filename, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    HANDLE temp_file = CreateFile(temp_filename.c_str(), GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
     if (temp_file == INVALID_HANDLE_VALUE)
     {
       throw std::runtime_error("unable to create temporary file: " + GetLastError());

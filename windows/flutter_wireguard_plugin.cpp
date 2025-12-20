@@ -203,7 +203,7 @@ namespace flutter_wireguard
       wstring wg_config_filename;
       try
       {
-        wg_config_filename = WriteConfigToTempFile(*config);
+        wg_config_filename = WriteConfigToTempFile(*name_ptr, *config);
       }
       catch (exception &e)
       {
