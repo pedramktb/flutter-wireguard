@@ -1,6 +1,7 @@
 import 'package:flutter/services.dart';
 import 'package:flutter_wireguard/flutter_wireguard_platform_interface.dart';
 
+@pragma('vm:entry-point')
 class FlutterWireguardMethodChannel extends FlutterWireguardPlatformInterface {
   static const _methodChannel =
       MethodChannel("dev.fluttercommunity.flutter_wireguard/methodChannel");
@@ -8,6 +9,7 @@ class FlutterWireguardMethodChannel extends FlutterWireguardPlatformInterface {
       EventChannel('dev.fluttercommunity.flutter_wireguard/eventChannel');
 
   @override
+  @pragma('vm:entry-point')
   Future<void> start({
     required String name,
     required String config,
@@ -19,6 +21,7 @@ class FlutterWireguardMethodChannel extends FlutterWireguardPlatformInterface {
   }
 
   @override
+  @pragma('vm:entry-point')
   Future<void> stop({
     required String name,
   }) =>
@@ -29,6 +32,7 @@ class FlutterWireguardMethodChannel extends FlutterWireguardPlatformInterface {
   final Exception invalidStatus = Exception("Invalid status response");
 
   @override
+  @pragma('vm:entry-point')
   Future<Map<String, dynamic>> status({required String name}) =>
       _methodChannel.invokeMethod("status", {
         "name": name,
@@ -48,6 +52,7 @@ class FlutterWireguardMethodChannel extends FlutterWireguardPlatformInterface {
           : throw invalidStatus);
 
   @override
+  @pragma('vm:entry-point')
   Stream<Map<String, dynamic>> statusStream() =>
       _eventChannel.receiveBroadcastStream().map((event) => event is Map
           ? {
