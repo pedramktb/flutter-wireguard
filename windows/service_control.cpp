@@ -21,18 +21,20 @@ namespace flutter_wireguard
   class ServiceControlException : public std::exception
   {
   private:
-    std::string message_;
+    std::string formatted_message_;
     unsigned long error_code_;
 
   public:
-    explicit ServiceControlException(const std::string &msg) : message_(msg), error_code_(0) {}
+    explicit ServiceControlException(const std::string &msg) : formatted_message_(msg), error_code_(0) {}
 
-    ServiceControlException(const std::string &msg, unsigned long errc) : message_(msg), error_code_(errc) {}
+    ServiceControlException(const std::string &msg, unsigned long errc) : error_code_(errc)
+    {
+      formatted_message_ = msg + " (" + std::to_string(errc) + ")";
+    }
 
     const char *what() const noexcept override
     {
-      std::string s = message_ + " (" + std::to_string(error_code_) + ")";
-      return s.c_str();
+      return formatted_message_.c_str();
     }
 
     unsigned long GetErrorCode() const noexcept

@@ -216,8 +216,8 @@ namespace flutter_wireguard
       auto current_exec_dir = wstring(module_filename);
       current_exec_dir = current_exec_dir.substr(0, current_exec_dir.find_last_of(L"\\/"));
       wostringstream service_exec_builder;
-      service_exec_builder << current_exec_dir << "\\wireguard_svc.exe" << L" -service"
-                           << L" -config-file=\"" << wg_config_filename << "\"";
+      service_exec_builder << L"\"" << current_exec_dir << L"\\wireguard_svc.exe\"" << L" -service"
+                           << L" -config-file=\"" << wg_config_filename << L"\"";
       wstring service_exec = service_exec_builder.str();
       std::cout << "Starting service with command line: " << WideToUtf8(service_exec) << std::endl;
       try
