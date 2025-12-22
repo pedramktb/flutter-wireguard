@@ -277,7 +277,6 @@ namespace flutter_wireguard
         return;
       }
 
-      /* Disabled real status logic
       auto tunnel_service = this->tunnel_service_.get();
       if (tunnel_service == nullptr)
       {
@@ -300,15 +299,12 @@ namespace flutter_wireguard
       {
         // Best-effort; leave zeros on failure
       }
-      */
 
-      // Return fake data as requested
-      std::string name = name_ptr ? *name_ptr : "unknown";
-      flutter::EncodableMap map = {{flutter::EncodableValue("name"), flutter::EncodableValue(name)},
-                                   {flutter::EncodableValue("state"), flutter::EncodableValue("UP")},
-                                   {flutter::EncodableValue("tx"), flutter::EncodableValue((long long)12345)},
-                                   {flutter::EncodableValue("rx"), flutter::EncodableValue((long long)54321)},
-                                   {flutter::EncodableValue("handshake"), flutter::EncodableValue((long long)1600000000)}};
+      flutter::EncodableMap map = {{flutter::EncodableValue("name"), flutter::EncodableValue(*name_ptr)},
+                                   {flutter::EncodableValue("state"), flutter::EncodableValue(state)},
+                                   {flutter::EncodableValue("tx"), flutter::EncodableValue(tx)},
+                                   {flutter::EncodableValue("rx"), flutter::EncodableValue(rx)},
+                                   {flutter::EncodableValue("handshake"), flutter::EncodableValue(handshake)}};
       result->Success(flutter::EncodableValue(map));
       return;
     }
@@ -320,7 +316,6 @@ namespace flutter_wireguard
       const EncodableValue *arguments,
       unique_ptr<EventSink<EncodableValue>> &&events)
   {
-    /* Disabled real event listener
     events_ = move(events);
     auto tunnel_service = this->tunnel_service_.get();
     if (tunnel_service != nullptr)
@@ -328,7 +323,6 @@ namespace flutter_wireguard
       tunnel_service->RegisterListener(move(events_));
       return nullptr;
     }
-    */
 
     return nullptr;
   }
@@ -336,7 +330,6 @@ namespace flutter_wireguard
   unique_ptr<StreamHandlerError<EncodableValue>> FlutterWireguardPlugin::OnCancel(
       const EncodableValue *arguments)
   {
-    /* Disabled real event listener
     events_ = nullptr;
     auto tunnel_service = this->tunnel_service_.get();
     if (tunnel_service != nullptr)
@@ -344,7 +337,6 @@ namespace flutter_wireguard
       tunnel_service->UnregisterListener();
       return nullptr;
     }
-    */
 
     return nullptr;
   }
