@@ -79,4 +79,16 @@ namespace flutter_wireguard
     MessageBox(NULL, &ws[0], L"Debug", MB_OK);
   }
 
+  void Log(const std::string &message)
+  {
+    std::string msg = message + "\n";
+    OutputDebugStringA(msg.c_str());
+  }
+
+  void Log(const std::wstring &message)
+  {
+    std::wstring msg = message + L"\n";
+    OutputDebugStringW(msg.c_str());
+  }
+
 } // namespace flutter_wireguard

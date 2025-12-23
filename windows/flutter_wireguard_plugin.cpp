@@ -13,7 +13,6 @@
 
 #include <memory>
 #include <sstream>
-#include <iostream>
 
 #include "config_writer.h"
 #include "service_control.h"
@@ -219,7 +218,7 @@ namespace flutter_wireguard
       service_exec_builder << L"\"" << current_exec_dir << L"\\wireguard_svc.exe\"" << L" -service"
                            << L" -config-file=\"" << wg_config_filename << L"\"";
       wstring service_exec = service_exec_builder.str();
-      std::cout << "Starting service with command line: " << WideToUtf8(service_exec) << std::endl;
+      Log(L"Starting service with command line: " + service_exec);
       try
       {
         CreateArgs csa;

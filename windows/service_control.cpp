@@ -13,7 +13,6 @@
 
 #include "utils.h"
 #include "wireguard.h"
-#include <iostream>
 
 namespace flutter_wireguard
 {
@@ -70,7 +69,7 @@ namespace flutter_wireguard
       if (service == NULL)
       {
         CloseServiceHandle(service_manager);
-        std::cout << "wireguard_flutter: Failed to create the service" << GetLastError() << std::endl;
+        Log("wireguard_flutter: Failed to create the service (" + std::to_string(GetLastError()) + ")");
         throw ServiceControlException("Failed to create the service", GetLastError());
       }
     }
@@ -80,7 +79,7 @@ namespace flutter_wireguard
     {
       CloseServiceHandle(service);
       CloseServiceHandle(service_manager);
-      std::cout << "wireguard_flutter: Failed to configure servivce SID type" << GetLastError() << std::endl;
+      Log("wireguard_flutter: Failed to configure service SID type (" + std::to_string(GetLastError()) + ")");
       throw ServiceControlException("Failed to configure servivce SID type", GetLastError());
     }
 
@@ -89,7 +88,7 @@ namespace flutter_wireguard
     {
       CloseServiceHandle(service);
       CloseServiceHandle(service_manager);
-      std::cout << "wireguard_flutter: Failed to configure service description" << GetLastError() << std::endl;
+      Log("wireguard_flutter: Failed to configure service description (" + std::to_string(GetLastError()) + ")");
       throw ServiceControlException("Failed to configure service description", GetLastError());
     }
 
@@ -105,7 +104,7 @@ namespace flutter_wireguard
     {
       CloseServiceHandle(service);
       CloseServiceHandle(service_manager);
-      std::cout << "wireguard_flutter: Failed to query service status" << GetLastError() << std::endl;
+      Log("wireguard_flutter: Failed to query service status (" + std::to_string(GetLastError()) + ")");
       return;
     }
 
@@ -114,17 +113,17 @@ namespace flutter_wireguard
       CloseServiceHandle(service);
       CloseServiceHandle(service_manager);
       EmitState(WideToAnsi(this->service_name_), "UP", 0, 0, 0);
-      std::cout << "wireguard_flutter: Service is already running" << GetLastError() << std::endl;
+      Log("wireguard_flutter: Service is already running (" + std::to_string(GetLastError()) + ")");
       return;
     }
 
     if (!StartService(service, 0, NULL))
     {
-      std::cout << "wireguard_flutter: Failed to start the service: " << GetLastError() << std::endl;
+      Log("wireguard_flutter: Failed to start the service: " + std::to_string(GetLastError()));
 
       if (args.first_time)
       {
-        std::cout << "wireguard_flutter: Trying to delete and recreate the service" << std::endl;
+        Log("wireguard_flutter: Trying to delete and recreate the service");
         DeleteService(service);
         CloseServiceHandle(service);
         CloseServiceHandle(service_manager);
@@ -134,7 +133,7 @@ namespace flutter_wireguard
       }
       CloseServiceHandle(service);
       CloseServiceHandle(service_manager);
-      std::cout << "wireguard_flutter: Failed to start the service" << GetLastError() << std::endl;
+      Log("wireguard_flutter: Failed to start the service (" + std::to_string(GetLastError()) + ")");
       throw ServiceControlException("Failed to start the service", GetLastError());
     }
 
@@ -152,7 +151,7 @@ namespace flutter_wireguard
     {
       if (args.first_time)
       {
-        std::cout << "wireguard_flutter: Trying to delete and recreate the service" << std::endl;
+        Log("wireguard_flutter: Trying to delete and recreate the service");
         DeleteService(service);
         CloseServiceHandle(service);
         CloseServiceHandle(service_manager);
@@ -164,7 +163,7 @@ namespace flutter_wireguard
       {
         CloseServiceHandle(service);
         CloseServiceHandle(service_manager);
-        std::cout << "wireguard_flutter: Failed to start the service" << GetLastError() << std::endl;
+        Log("wireguard_flutter: Failed to start the service (" + std::to_string(GetLastError()) + ")");
         throw ServiceControlException("Failed to start the service", GetLastError());
       }
     }

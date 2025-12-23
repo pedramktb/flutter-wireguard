@@ -24,6 +24,10 @@ std::wstring AnsiToWide(const std::string &str);
 // Pops a message box (useful for debugging native code)
 void DebugMessageBox(const char* msg);
 
+// Safe logging for Windows GUI applications (outputs to debugger)
+void Log(const std::string& message);
+void Log(const std::wstring& message);
+
 }  // namespace flutter_wireguard
 
 #endif
