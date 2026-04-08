@@ -17,4 +17,8 @@ class FlutterWireguard extends FlutterWireguardPlatformInterface {
   @override
   Stream<Map<String, dynamic>> statusStream() =>
       FlutterWireguardPlatformInterface.instance.statusStream();
+
+  @override
+  Future<String> backendType() =>
+      FlutterWireguardPlatformInterface.instance.backendType();
 }

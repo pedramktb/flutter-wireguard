@@ -57,6 +57,7 @@ class Wireguard private constructor(context: Context) {
 
     fun goBackend() : Boolean = backend is GoBackend
     fun wgQuickBackend() : Boolean = backend is WgQuickBackend
+    fun backendType(): String = if (backend is GoBackend) "GoBackend" else "WgQuickBackend (kernel)"
 
     fun start(name: String, config:String) {
         Log.i("WireGuard", "Starting tunnel: $name")
