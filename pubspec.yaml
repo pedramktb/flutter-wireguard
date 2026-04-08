@@ -1,16 +1,16 @@
 name: flutter_wireguard
-description: Flutter plugin for Wireguard
+description: A Flutter plugin for managing WireGuard VPN tunnels. Currently supports Android, with iOS, macOS, Linux, and Windows in progress.
 version: 0.0.1
 homepage: https://github.com/pedramktb/flutter-wireguard
 
 environment:
   sdk: ^3.1.0
-  flutter: any
+  flutter: ">=3.1.0"
 
 dependencies:
   flutter:
     sdk: flutter
-  plugin_platform_interface: any
+  plugin_platform_interface: ^2.1.8
 
 dev_dependencies:
   flutter_test:
@@ -27,7 +27,7 @@ flutter:
         pluginClass: FlutterWireguardPlugin
         sharedDarwinSource: true
       macos:
-        pluginClass: WireguardFlutterPlugin
+        pluginClass: FlutterWireguardPlugin
         sharedDarwinSource: true
       linux:
         pluginClass: FlutterWireguardPlugin
