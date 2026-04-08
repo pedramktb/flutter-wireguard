@@ -48,6 +48,10 @@ class FlutterWireguardMethodChannel extends FlutterWireguardPlatformInterface {
           : throw invalidStatus);
 
   @override
+  Future<String> backendType() async =>
+      await _methodChannel.invokeMethod<String>('backendType') ?? 'unknown';
+
+  @override
   Stream<Map<String, dynamic>> statusStream() =>
       _eventChannel.receiveBroadcastStream().map((event) => event is Map
           ? {

@@ -1,3 +1,30 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+  xmlns:tools="http://schemas.android.com/tools"
   package="dev.fluttercommunity.flutter_wireguard">
+
+  <application>
+
+    <!--
+      WireguardService owns GoBackend and libwg-go.so.
+      Declaring it in android:process=":wireguard" keeps the wireguard-go runtime
+      (Go 1.23.x) in a separate address space from other potentially Go-using libraries
+      in the main Flutter process, preventing the dual-Go-runtime crash.
+    -->
+    <service
+      android:name=".WireguardService"
+      android:process=":wireguard"
+      android:exported="false" />
+
+    <!--
+      GoBackend internally starts GoBackend$VpnService to establish the VPN socket.
+      Override the process attribute so it also starts in ':wireguard', ensuring
+      libwg-go.so is never mapped into the main process.
+    -->
+    <service
+      android:name="com.wireguard.android.backend.GoBackend$VpnService"
+      android:process=":wireguard"
+      tools:node="merge" />
+
+  </application>
+
 </manifest>

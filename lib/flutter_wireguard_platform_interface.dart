@@ -26,4 +26,6 @@ abstract class FlutterWireguardPlatformInterface extends PlatformInterface {
       throw UnimplementedError();
 
   Stream<Map<String, dynamic>> statusStream() => throw UnimplementedError();
+
+  Future<String> backendType() => throw UnimplementedError();
 }
