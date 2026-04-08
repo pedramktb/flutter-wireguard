@@ -1,7 +1,7 @@
 name: flutter_wireguard
 description: Flutter plugin for Wireguard
 version: 0.0.1
-homepage:
+homepage: https://github.com/pedramktb/flutter-wireguard
 
 environment:
   sdk: ^3.1.0
