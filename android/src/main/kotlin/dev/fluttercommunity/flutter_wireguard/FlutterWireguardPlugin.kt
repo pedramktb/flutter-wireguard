@@ -56,20 +56,35 @@ class FlutterWireguardPlugin : FlutterPlugin, MethodCallHandler, ActivityAware, 
     // Binder proxy to WireguardService running in ':wireguard' process.
     @Volatile private var wireguardService: IWireguard? = null
 
+    // Guard against rebinding during teardown (onDetachedFromEngine).
+    @Volatile private var isEngineAttached = false
+
+    // Stored binding reference for removing the ActivityResultListener on detach.
+    private var activityBinding: ActivityPluginBinding? = null
+
     // ------------------------------------------------------------------
     // Service connection
     // ------------------------------------------------------------------
 
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName, binder: IBinder) {
-            wireguardService = IWireguard.Stub.asInterface(binder)
-            wireguardService?.registerCallback(wireguardCallback)
+            val svc = IWireguard.Stub.asInterface(binder)
+            try {
+                svc.registerCallback(wireguardCallback)
+                wireguardService = svc
+            } catch (_: Exception) {
+                // Binder failure during registration; clear and retry.
+                wireguardService = null
+                appContext?.let { bindWireguardService(it) }
+            }
         }
 
         override fun onServiceDisconnected(name: ComponentName) {
-            // Remote ':wireguard' process was killed; attempt to rebind.
+            // Remote ':wireguard' process was killed; attempt to rebind only if still attached.
             wireguardService = null
-            appContext?.let { bindWireguardService(it) }
+            if (isEngineAttached) {
+                appContext?.let { bindWireguardService(it) }
+            }
         }
     }
 
@@ -102,6 +117,7 @@ class FlutterWireguardPlugin : FlutterPlugin, MethodCallHandler, ActivityAware, 
     // ------------------------------------------------------------------
 
     override fun onAttachedToEngine(binding: FlutterPlugin.FlutterPluginBinding) {
+        isEngineAttached = true
         appContext = binding.applicationContext
 
         methodChannel = MethodChannel(
@@ -127,6 +143,9 @@ class FlutterWireguardPlugin : FlutterPlugin, MethodCallHandler, ActivityAware, 
     }
 
     override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
+        // Mark as detached before unbind to prevent onServiceDisconnected from rebinding.
+        isEngineAttached = false
+        eventSink = null
         try { wireguardService?.unregisterCallback(wireguardCallback) } catch (_: Exception) {}
         try { appContext?.unbindService(serviceConnection) } catch (_: Exception) {}
 
@@ -180,14 +199,7 @@ class FlutterWireguardPlugin : FlutterPlugin, MethodCallHandler, ActivityAware, 
                 val name: String = call.argument("name")!!
                 scope.launch {
                     try {
-                        val json = svc.statusJson(name)
-                        if (json == null) {
-                            mainHandler.post {
-                                result.error("NO_STATUS", "Tunnel '$name' not found", null)
-                            }
-                            return@launch
-                        }
-                        val obj = JSONObject(json)
+                        val obj = JSONObject(svc.statusJson(name))
                         val map = mapOf(
                             "name" to obj.getString("name"),
                             "state" to obj.getString("state"),
@@ -222,22 +234,36 @@ class FlutterWireguardPlugin : FlutterPlugin, MethodCallHandler, ActivityAware, 
     // ------------------------------------------------------------------
 
     override fun onAttachedToActivity(binding: ActivityPluginBinding) {
+        activityBinding = binding
         activity = binding.activity
         binding.addActivityResultListener(this)
         requestVpnPermission()
     }
 
     override fun onReattachedToActivityForConfigChanges(binding: ActivityPluginBinding) {
+        activityBinding = binding
         activity = binding.activity
         binding.addActivityResultListener(this)
         requestVpnPermission()
     }
 
-    override fun onDetachedFromActivity() { activity = null }
-    override fun onDetachedFromActivityForConfigChanges() { activity = null }
+    override fun onDetachedFromActivity() {
+        activityBinding?.removeActivityResultListener(this)
+        activityBinding = null
+        activity = null
+    }
 
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?): Boolean =
-        requestCode == permissionRequestCode && resultCode == Activity.RESULT_OK
+    override fun onDetachedFromActivityForConfigChanges() {
+        activityBinding?.removeActivityResultListener(this)
+        activityBinding = null
+        activity = null
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?): Boolean {
+        if (requestCode != permissionRequestCode) return false
+        // Always consume the VPN permission result (granted or denied).
+        return true
+    }
 
     /**
      * Request VPN permission using the base android.net.VpnService — not GoBackend.VpnService.

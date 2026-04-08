@@ -8,6 +8,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import org.json.JSONObject
 
@@ -46,18 +47,16 @@ class WireguardService : Service() {
         }
 
         override fun statusJson(name: String): String? {
-            return try {
-                val s = wireguard.status(name)
-                JSONObject().apply {
-                    put("name", s.name)
-                    put("state", s.state.toString())
-                    put("rx", s.rx)
-                    put("tx", s.tx)
-                    put("handshake", s.handshake)
-                }.toString()
-            } catch (_: Exception) {
-                null
-            }
+            // Let exceptions propagate over Binder so the caller can distinguish
+            // backend failures from a tunnel-not-found null return.
+            val s = wireguard.status(name)
+            return JSONObject().apply {
+                put("name", s.name)
+                put("state", s.state.toString())
+                put("rx", s.rx)
+                put("tx", s.tx)
+                put("handshake", s.handshake)
+            }.toString()
         }
 
         override fun backendType(): String = wireguard.backendType()
