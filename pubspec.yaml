@@ -21,7 +21,7 @@ flutter:
   plugin:
     platforms:
       android:
-        package: dev.fluttercommunity.flutter_wireguard
+        package: com.pedramktb.flutter_wireguard
         pluginClass: FlutterWireguardPlugin
       ios:
         pluginClass: FlutterWireguardPlugin

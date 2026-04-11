@@ -1,4 +1,4 @@
-group = "dev.fluttercommunity.flutter_wireguard"
+group = "com.pedramktb.flutter_wireguard"
 version = "1.0-SNAPSHOT"
 
 buildscript {
@@ -25,7 +25,7 @@ apply plugin: "com.android.library"
 apply plugin: "kotlin-android"
 
 android {
-    namespace = "dev.fluttercommunity.flutter_wireguard"
+    namespace = "com.pedramktb.flutter_wireguard"
 
     compileSdk = 36
 

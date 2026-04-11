@@ -1,4 +1,4 @@
-package dev.fluttercommunity.flutter_wireguard
+package com.pedramktb.flutter_wireguard
 
 import android.app.Service
 import android.content.Intent

@@ -1,6 +1,6 @@
-package dev.fluttercommunity.flutter_wireguard;
+package com.pedramktb.flutter_wireguard;
 
-import dev.fluttercommunity.flutter_wireguard.IWireguardCallback;
+import com.pedramktb.flutter_wireguard.IWireguardCallback;
 
 // Binder interface exposed by WireguardService running in the :wireguard process.
 interface IWireguard {

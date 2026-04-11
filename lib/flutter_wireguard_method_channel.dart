@@ -3,9 +3,9 @@ import 'package:flutter_wireguard/flutter_wireguard_platform_interface.dart';
 
 class FlutterWireguardMethodChannel extends FlutterWireguardPlatformInterface {
   static const _methodChannel =
-      MethodChannel("dev.fluttercommunity.flutter_wireguard/methodChannel");
+      MethodChannel("com.pedramktb.flutter_wireguard/methodChannel");
   static const _eventChannel =
-      EventChannel('dev.fluttercommunity.flutter_wireguard/eventChannel');
+      EventChannel('com.pedramktb.flutter_wireguard/eventChannel');
 
   @override
   Future<void> start({

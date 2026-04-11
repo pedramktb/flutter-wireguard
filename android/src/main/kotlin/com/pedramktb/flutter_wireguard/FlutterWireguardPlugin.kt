@@ -1,4 +1,4 @@
-package dev.fluttercommunity.flutter_wireguard
+package com.pedramktb.flutter_wireguard
 
 import android.app.Activity
 import android.content.ComponentName
@@ -122,13 +122,13 @@ class FlutterWireguardPlugin : FlutterPlugin, MethodCallHandler, ActivityAware, 
 
         methodChannel = MethodChannel(
             binding.binaryMessenger,
-            "dev.fluttercommunity.flutter_wireguard/methodChannel"
+            "com.pedramktb.flutter_wireguard/methodChannel"
         )
         methodChannel.setMethodCallHandler(this)
 
         eventChannel = EventChannel(
             binding.binaryMessenger,
-            "dev.fluttercommunity.flutter_wireguard/eventChannel"
+            "com.pedramktb.flutter_wireguard/eventChannel"
         )
         eventChannel.setStreamHandler(object : EventChannel.StreamHandler {
             override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {

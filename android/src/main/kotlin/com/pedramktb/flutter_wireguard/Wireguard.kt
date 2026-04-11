@@ -1,4 +1,4 @@
-package dev.fluttercommunity.flutter_wireguard
+package com.pedramktb.flutter_wireguard
 
 import android.content.Context
 import android.util.Log
@@ -125,4 +125,3 @@ class Wireguard private constructor(context: Context) {
             }
         }
 }
-
