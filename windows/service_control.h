@@ -12,7 +12,7 @@
 #include <thread>
 #include <atomic>
 
-namespace wireguard_flutter
+namespace flutter_wireguard
 {
 
   struct CreateArgs
@@ -44,6 +44,6 @@ namespace wireguard_flutter
     void PollLoop();
   };
 
-} // namespace wireguard_flutter
+} // namespace flutter_wireguard
 
 #endif

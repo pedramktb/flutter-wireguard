@@ -13,26 +13,27 @@
 
 #include "utils.h"
 #include "wireguard.h"
-#include <iostream>
 
-namespace wireguard_flutter
+namespace flutter_wireguard
 {
 
   class ServiceControlException : public std::exception
   {
   private:
-    std::string message_;
+    std::string formatted_message_;
     unsigned long error_code_;
 
   public:
-    explicit ServiceControlException(const std::string &msg) : message_(msg), error_code_(0) {}
+    explicit ServiceControlException(const std::string &msg) : formatted_message_(msg), error_code_(0) {}
 
-    ServiceControlException(const std::string &msg, unsigned long errc) : message_(msg), error_code_(errc) {}
+    ServiceControlException(const std::string &msg, unsigned long errc) : error_code_(errc)
+    {
+      formatted_message_ = msg + " (" + std::to_string(errc) + ")";
+    }
 
     const char *what() const noexcept override
     {
-      std::string s = message_ + " (" + std::to_string(error_code_) + ")";
-      return s.c_str();
+      return formatted_message_.c_str();
     }
 
     unsigned long GetErrorCode() const noexcept
@@ -49,11 +50,9 @@ namespace wireguard_flutter
       throw ServiceControlException("Failed to open service manager", GetLastError());
     }
 
-    SC_HANDLE service = OpenService(service_manager, &service_name_[0], SC_MANAGER_ALL_ACCESS);
+    SC_HANDLE service = OpenService(service_manager, &service_name_[0], SERVICE_ALL_ACCESS);
     if (service == NULL)
     {
-      CloseServiceHandle(service);
-
       service = CreateService(service_manager,                  // SCM database
                               &service_name_[0],                // name of service
                               &service_name_[0],                // service name to display
@@ -70,7 +69,7 @@ namespace wireguard_flutter
       if (service == NULL)
       {
         CloseServiceHandle(service_manager);
-        std::cout << "wireguard_flutter: Failed to create the service" << GetLastError() << std::endl;
+        Log("wireguard_flutter: Failed to create the service (" + std::to_string(GetLastError()) + ")");
         throw ServiceControlException("Failed to create the service", GetLastError());
       }
     }
@@ -80,7 +79,7 @@ namespace wireguard_flutter
     {
       CloseServiceHandle(service);
       CloseServiceHandle(service_manager);
-      std::cout << "wireguard_flutter: Failed to configure servivce SID type" << GetLastError() << std::endl;
+      Log("wireguard_flutter: Failed to configure service SID type (" + std::to_string(GetLastError()) + ")");
       throw ServiceControlException("Failed to configure servivce SID type", GetLastError());
     }
 
@@ -89,7 +88,7 @@ namespace wireguard_flutter
     {
       CloseServiceHandle(service);
       CloseServiceHandle(service_manager);
-      std::cout << "wireguard_flutter: Failed to configure service description" << GetLastError() << std::endl;
+      Log("wireguard_flutter: Failed to configure service description (" + std::to_string(GetLastError()) + ")");
       throw ServiceControlException("Failed to configure service description", GetLastError());
     }
 
@@ -105,7 +104,7 @@ namespace wireguard_flutter
     {
       CloseServiceHandle(service);
       CloseServiceHandle(service_manager);
-      std::cout << "wireguard_flutter: Failed to query service status" << GetLastError() << std::endl;
+      Log("wireguard_flutter: Failed to query service status (" + std::to_string(GetLastError()) + ")");
       return;
     }
 
@@ -113,18 +112,18 @@ namespace wireguard_flutter
     {
       CloseServiceHandle(service);
       CloseServiceHandle(service_manager);
-      EmitState(this->service_name_, "UP", 0, 0, 0);
-      std::cout << "wireguard_flutter: Service is already running" << GetLastError() << std::endl;
+      EmitState(WideToAnsi(this->service_name_), "UP", 0, 0, 0);
+      Log("wireguard_flutter: Service is already running (" + std::to_string(GetLastError()) + ")");
       return;
     }
 
     if (!StartService(service, 0, NULL))
     {
-      std::cout << "wireguard_flutter: Failed to start the service: " << GetLastError() << std::endl;
+      Log("wireguard_flutter: Failed to start the service: " + std::to_string(GetLastError()));
 
       if (args.first_time)
       {
-        std::cout << "wireguard_flutter: Trying to delete and recreate the service" << std::endl;
+        Log("wireguard_flutter: Trying to delete and recreate the service");
         DeleteService(service);
         CloseServiceHandle(service);
         CloseServiceHandle(service_manager);
@@ -134,7 +133,7 @@ namespace wireguard_flutter
       }
       CloseServiceHandle(service);
       CloseServiceHandle(service_manager);
-      std::cout << "wireguard_flutter: Failed to start the service" << GetLastError() << std::endl;
+      Log("wireguard_flutter: Failed to start the service (" + std::to_string(GetLastError()) + ")");
       throw ServiceControlException("Failed to start the service", GetLastError());
     }
 
@@ -152,7 +151,7 @@ namespace wireguard_flutter
     {
       if (args.first_time)
       {
-        std::cout << "wireguard_flutter: Trying to delete and recreate the service" << std::endl;
+        Log("wireguard_flutter: Trying to delete and recreate the service");
         DeleteService(service);
         CloseServiceHandle(service);
         CloseServiceHandle(service_manager);
@@ -164,12 +163,12 @@ namespace wireguard_flutter
       {
         CloseServiceHandle(service);
         CloseServiceHandle(service_manager);
-        std::cout << "wireguard_flutter: Failed to start the service" << GetLastError() << std::endl;
+        Log("wireguard_flutter: Failed to start the service (" + std::to_string(GetLastError()) + ")");
         throw ServiceControlException("Failed to start the service", GetLastError());
       }
     }
 
-    EmitState(this->service_name_, "UP", 0, 0, 0);
+    EmitState(WideToAnsi(this->service_name_), "UP", 0, 0, 0);
 
     CloseServiceHandle(service);
     CloseServiceHandle(service_manager);
@@ -201,7 +200,7 @@ namespace wireguard_flutter
     }
     if (service_status.dwCurrentState == SERVICE_STOPPED)
     {
-      EmitState(this->service_name_, "DOWN", 0, 0, 0);
+      EmitState(WideToAnsi(this->service_name_), "DOWN", 0, 0, 0);
       CloseServiceHandle(service);
       CloseServiceHandle(service_manager);
       return;
@@ -233,7 +232,7 @@ namespace wireguard_flutter
 
       if (service_status.dwCurrentState == SERVICE_STOPPED)
       {
-        EmitState(this->service_name_, "DOWN", 0, 0, 0);
+        EmitState(WideToAnsi(this->service_name_), "DOWN", 0, 0, 0);
         CloseServiceHandle(service);
         CloseServiceHandle(service_manager);
         return;
@@ -270,7 +269,7 @@ namespace wireguard_flutter
 
       if (service_status.dwCurrentState == SERVICE_STOPPED)
       {
-        EmitState(this->service_name_, "DOWN", 0, 0, 0);
+        EmitState(WideToAnsi(this->service_name_), "DOWN", 0, 0, 0);
         CloseServiceHandle(service);
         CloseServiceHandle(service_manager);
         return;
@@ -500,7 +499,9 @@ namespace wireguard_flutter
         std::string state = GetStatus() == "connected" ? "UP" : "DOWN";
         long long rx = 0, tx = 0, hs = 0;
         QueryWireGuardStats(service_name_, rx, tx, hs);
-        EmitState(WideToAnsi(service_name_), state, tx, rx, hs);
+        // TODO: EmitState is not thread-safe and causes crashes when called from background thread.
+        // For now, we only emit state on connect/disconnect from the main thread.
+        // EmitState(WideToAnsi(service_name_), state, tx, rx, hs);
       }
       catch (...)
       {
@@ -510,4 +511,4 @@ namespace wireguard_flutter
     }
   }
 
-} // namespace wireguard_flutter
+} // namespace flutter_wireguard

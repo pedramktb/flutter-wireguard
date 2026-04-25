@@ -7,7 +7,7 @@
 #include <sstream>
 #include <string>
 
-namespace wireguard_flutter {
+namespace flutter_wireguard {
 
 const flutter::EncodableValue *ValueOrNull(const flutter::EncodableMap &map, const char *key);
 
@@ -24,6 +24,10 @@ std::wstring AnsiToWide(const std::string &str);
 // Pops a message box (useful for debugging native code)
 void DebugMessageBox(const char* msg);
 
-}  // namespace wireguard_flutter
+// Safe logging for Windows GUI applications (outputs to debugger)
+void Log(const std::string& message);
+void Log(const std::wstring& message);
+
+}  // namespace flutter_wireguard
 
 #endif
