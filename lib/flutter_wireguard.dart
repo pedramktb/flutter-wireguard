@@ -22,4 +22,8 @@ class FlutterWireguard extends FlutterWireguardPlatformInterface {
   @pragma('vm:entry-point')
   Stream<Map<String, dynamic>> statusStream() =>
       FlutterWireguardPlatformInterface.instance.statusStream();
+
+  @override
+  Future<String> backendType() =>
+      FlutterWireguardPlatformInterface.instance.backendType();
 }
