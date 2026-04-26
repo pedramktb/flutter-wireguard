@@ -1,94 +1,157 @@
-# The Flutter tooling requires that developers have a version of Visual Studio
-# installed that includes CMake 3.14 or later. You should not increase this
-# version, as doing so will cause the plugin to fail to compile for some
-# customers of the plugin.
 cmake_minimum_required(VERSION 3.14)
 
-# Project-level configuration.
 set(PROJECT_NAME "flutter_wireguard")
 project(${PROJECT_NAME} LANGUAGES CXX)
 
-# Explicitly opt in to modern CMake behaviors to avoid warnings with recent
-# versions of CMake.
 cmake_policy(VERSION 3.14...3.25)
 
-# This value is used when generating builds using this plugin, so it must
-# not be changed
 set(PLUGIN_NAME "flutter_wireguard_plugin")
+set(HELPER_NAME "flutter_wireguard_helper")
 
-# Any new source files that you add to the plugin should be added here.
+# ---------------------------------------------------------------------------
+# Plugin DLL (loaded into the unprivileged Flutter UI process).
+# ---------------------------------------------------------------------------
 list(APPEND PLUGIN_SOURCES
   "flutter_wireguard_plugin.cpp"
   "flutter_wireguard_plugin.h"
-  "config_writer.cpp"
-  "config_writer.h"
-  "service_control.cpp"
-  "service_control.h"
+  "broker_client.cpp"
+  "broker_client.h"
+  "messages.g.cpp"
+  "messages.g.h"
   "utils.cpp"
   "utils.h"
 )
 
-# Define the plugin library target. Its name must not be changed (see comment
-# on PLUGIN_NAME above).
 add_library(${PLUGIN_NAME} SHARED
   "include/flutter_wireguard/flutter_wireguard_plugin_c_api.h"
   "flutter_wireguard_plugin_c_api.cpp"
   ${PLUGIN_SOURCES}
 )
 
-# Apply a standard set of build settings that are configured in the
-# application-level CMakeLists.txt. This can be removed for plugins that want
-# full control over build settings.
 apply_standard_settings(${PLUGIN_NAME})
 
-# Symbols are hidden by default to reduce the chance of accidental conflicts
-# between plugins. This should not be removed; any symbols that should be
-# exported should be explicitly exported with the FLUTTER_PLUGIN_EXPORT macro.
 set_target_properties(${PLUGIN_NAME} PROPERTIES
-  CXX_VISIBILITY_PRESET hidden)
-target_compile_definitions(${PLUGIN_NAME} PRIVATE FLUTTER_PLUGIN_IMPL)
-
-# Source include directories and library dependencies. Add any plugin-specific
-# dependencies here.
+  CXX_VISIBILITY_PRESET hidden
+  CXX_STANDARD 17
+  CXX_STANDARD_REQUIRED ON)
+target_compile_definitions(${PLUGIN_NAME} PRIVATE FLUTTER_PLUGIN_IMPL WIN32_LEAN_AND_MEAN)
 target_include_directories(${PLUGIN_NAME} INTERFACE
   "${CMAKE_CURRENT_SOURCE_DIR}/include")
-target_link_libraries(${PLUGIN_NAME} PRIVATE flutter flutter_wrapper_plugin)
+target_include_directories(${PLUGIN_NAME} PRIVATE
+  "${CMAKE_CURRENT_SOURCE_DIR}"
+  "${CMAKE_CURRENT_SOURCE_DIR}/../cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/lib/wireguard/include")
+target_link_libraries(${PLUGIN_NAME} PRIVATE flutter flutter_wrapper_plugin
+                                             Wtsapi32 Shell32 Advapi32)
 
-# b64 and wireguard
-add_subdirectory(external)
-target_link_libraries(${PLUGIN_NAME} PRIVATE base64)
-
-add_compile_definitions(WIN32_LEAN_AND_MEAN) # for Wireguard winsock/windows conflict
-
-add_library(tunnel SHARED IMPORTED GLOBAL)
-set_target_properties(tunnel PROPERTIES
-    IMPORTED_LOCATION "${CMAKE_CURRENT_SOURCE_DIR}/lib/tunnel/amd64/tunnel.dll"
-    IMPORTED_IMPLIB "${CMAKE_CURRENT_SOURCE_DIR}/lib/tunnel/amd64/tunnel.lib"
+# ---------------------------------------------------------------------------
+# Helper exe (broker mode + tunnel-service mode).
+# Must NOT depend on Flutter, so it can run as a Windows service under
+# LocalSystem.
+# ---------------------------------------------------------------------------
+add_executable(${HELPER_NAME}
+  "helper/main.cpp"
+  "helper/broker.cpp"
+  "helper/broker.h"
+  "helper/pipe_security.cpp"
+  "helper/pipe_security.h"
+  "helper/tunnel_manager.cpp"
+  "helper/tunnel_manager.h"
+  "helper/tunnel_service.cpp"
+  "helper/tunnel_service.h"
+  "helper/config_writer.cpp"
+  "helper/config_writer.h"
+  "helper/wireguard_dll.cpp"
+  "helper/wireguard_dll.h"
+  "utils.cpp"
+  "utils.h"
 )
-target_include_directories(tunnel INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/lib/tunnel/include")
-target_link_libraries(${PLUGIN_NAME} PRIVATE tunnel)
 
-add_library(wireguard SHARED IMPORTED GLOBAL)
-set_target_properties(wireguard PROPERTIES
-    IMPORTED_LOCATION "${CMAKE_CURRENT_SOURCE_DIR}/lib/wireguard/amd64/wireguard.dll"
-    IMPORTED_IMPLIB "${CMAKE_CURRENT_SOURCE_DIR}/lib/wireguard/amd64/wireguard.lib"
-)
-target_include_directories(wireguard INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/lib/wireguard/include")
-target_link_libraries(${PLUGIN_NAME} PRIVATE wireguard)
+set_target_properties(${HELPER_NAME} PROPERTIES
+  CXX_STANDARD 17
+  CXX_STANDARD_REQUIRED ON
+  WIN32_EXECUTABLE FALSE)  # console subsystem keeps stderr usable for tests
+target_compile_definitions(${HELPER_NAME} PRIVATE WIN32_LEAN_AND_MEAN _UNICODE UNICODE)
+target_include_directories(${HELPER_NAME} PRIVATE
+  "${CMAKE_CURRENT_SOURCE_DIR}"
+  "${CMAKE_CURRENT_SOURCE_DIR}/../cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/lib/wireguard/include")
+target_link_libraries(${HELPER_NAME} PRIVATE Advapi32 Wtsapi32 Crypt32 Shell32 Ole32)
 
-target_include_directories(${PLUGIN_NAME} INTERFACE
-  "${CMAKE_CURRENT_SOURCE_DIR}/include"
-  "${CMAKE_CURRENT_SOURCE_DIR}/lib/tunnel/include"
-  "${CMAKE_CURRENT_SOURCE_DIR}/lib/wireguard/include"
-)
-target_link_libraries(${PLUGIN_NAME} PRIVATE flutter flutter_wrapper_plugin)
+# Both DLLs are loaded at runtime via LoadLibrary inside helper.exe:
+#   - wireguard.dll (wireguard-nt) -> driver-control + stats
+#   - tunnel.dll    (embeddable)   -> high-level tunnel runtime (wg-quick
+#                                     semantics, DNS, routes, kill-switch).
+# tunnel.dll is GPLv2 so we deliberately avoid static linking; wireguard.dll
+# is MIT but loaded the same way for symmetry and graceful failure.
 
-# List of absolute paths to libraries that should be bundled with the plugin.
-# This list could contain prebuilt libraries, or libraries created by an
-# external build triggered from this build file.
+# ---------------------------------------------------------------------------
+# Bundle: plugin DLL + helper exe + the two Go DLLs.
+# Pick the right arch slice based on the active MSVC target.
+# ---------------------------------------------------------------------------
+if (CMAKE_SIZEOF_VOID_P EQUAL 8 AND
+    (CMAKE_GENERATOR_PLATFORM STREQUAL "ARM64" OR
+     CMAKE_SYSTEM_PROCESSOR MATCHES "^(ARM64|aarch64)$"))
+  set(_FW_ARCH_DIR "arm64")
+else()
+  set(_FW_ARCH_DIR "amd64")
+endif()
+
+set(_FW_WIREGUARD_DLL
+  "${CMAKE_CURRENT_SOURCE_DIR}/lib/wireguard/${_FW_ARCH_DIR}/wireguard.dll")
+set(_FW_TUNNEL_DLL
+  "${CMAKE_CURRENT_SOURCE_DIR}/lib/tunnel/${_FW_ARCH_DIR}/tunnel.dll")
+
+foreach(_dll IN ITEMS "${_FW_WIREGUARD_DLL}" "${_FW_TUNNEL_DLL}")
+  if (NOT EXISTS "${_dll}")
+    message(FATAL_ERROR
+      "flutter_wireguard: missing prebuilt DLL for arch '${_FW_ARCH_DIR}': "
+      "${_dll}\n"
+      "See windows/lib/VERSIONS.md for rebuild instructions.")
+  endif()
+endforeach()
+
 set(flutter_wireguard_bundled_libraries
-  "${CMAKE_CURRENT_SOURCE_DIR}/lib/wireguard/amd64/wireguard.dll"
-  "${CMAKE_CURRENT_SOURCE_DIR}/lib/tunnel/amd64/tunnel.dll"
-  "${CMAKE_CURRENT_SOURCE_DIR}/lib/wireguard_svc/amd64/wireguard_svc.exe"
+  "$<TARGET_FILE:${HELPER_NAME}>"
+  "${_FW_WIREGUARD_DLL}"
+  "${_FW_TUNNEL_DLL}"
   PARENT_SCOPE
 )
+
+# ---------------------------------------------------------------------------
+# Unit tests (gtest). Built only when the example app sets
+# include_${PROJECT_NAME}_tests=ON.
+# ---------------------------------------------------------------------------
+if (${include_${PROJECT_NAME}_tests})
+  enable_testing()
+  include(FetchContent)
+  if (POLICY CMP0135)
+    cmake_policy(SET CMP0135 NEW)
+  endif()
+  set(CMAKE_POLICY_VERSION_MINIMUM 3.10 CACHE STRING "" FORCE)
+  FetchContent_Declare(
+    googletest
+    URL https://github.com/google/googletest/archive/release-1.12.1.zip
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+  )
+  set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+  set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
+  FetchContent_MakeAvailable(googletest)
+
+  set(TEST_RUNNER "${PROJECT_NAME}_test")
+  add_executable(${TEST_RUNNER}
+    test/name_validation_test.cpp
+    test/ipc_protocol_test.cpp
+  )
+  set_target_properties(${TEST_RUNNER} PROPERTIES
+    CXX_STANDARD 17
+    CXX_STANDARD_REQUIRED ON)
+  target_compile_definitions(${TEST_RUNNER} PRIVATE WIN32_LEAN_AND_MEAN)
+  target_include_directories(${TEST_RUNNER} PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../cpp")
+  target_link_libraries(${TEST_RUNNER} PRIVATE gtest_main gmock)
+
+  include(GoogleTest)
+  gtest_discover_tests(${TEST_RUNNER})
+endif()

@@ -18,6 +18,9 @@ import 'package:pigeon/pigeon.dart';
   gobjectHeaderOut: 'linux/messages.g.h',
   gobjectSourceOut: 'linux/messages.g.cc',
   gobjectOptions: GObjectOptions(),
+  cppHeaderOut: 'windows/messages.g.h',
+  cppSourceOut: 'windows/messages.g.cpp',
+  cppOptions: CppOptions(namespace: 'flutter_wireguard'),
   dartPackageName: 'flutter_wireguard',
 ))
 

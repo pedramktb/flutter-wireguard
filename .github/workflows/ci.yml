@@ -72,3 +72,37 @@ jobs:
       - name: Run Kotlin unit tests
         working-directory: example/android
         run: ./gradlew :flutter_wireguard:testDebugUnitTest
+
+  windows:
+    name: Windows build + native gtest
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+      - run: flutter pub get
+      - name: Build example (windows)
+        working-directory: example
+        shell: pwsh
+        run: |
+          flutter pub get
+          flutter config --enable-windows-desktop
+          flutter build windows --debug
+      - name: Configure + build native gtest
+        working-directory: example
+        shell: pwsh
+        run: |
+          cmake -S windows -B build/windows/x64/debug -A x64 `
+                -Dinclude_flutter_wireguard_tests=ON `
+                -DFLUTTER_TARGET_PLATFORM=windows-x64
+          cmake --build build/windows/x64/debug --config Debug `
+                --target flutter_wireguard_test
+      - name: Run native gtest
+        working-directory: example
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem -Recurse -Filter flutter_wireguard_test.exe `
+                  -Path build/windows/x64/debug | Select-Object -First 1
+          if (-not $exe) { throw "test binary not found" }
+          & $exe.FullName --gtest_color=yes

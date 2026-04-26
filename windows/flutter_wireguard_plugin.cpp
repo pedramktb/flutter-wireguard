@@ -1,343 +1,213 @@
 #include "flutter_wireguard_plugin.h"
 
-// This must be included before many other Windows headers.
-#include <flutter/method_channel.h>
-#include <flutter/plugin_registrar_windows.h>
-#include <flutter/standard_method_codec.h>
-#include <flutter/event_channel.h>
-#include <flutter/event_stream_handler.h>
-#include <flutter/event_stream_handler_functions.h>
-#include <flutter/encodable_value.h>
-#include <libbase64.h>
 #include <windows.h>
 
+#include <atomic>
 #include <memory>
-#include <sstream>
+#include <mutex>
+#include <queue>
+#include <stdexcept>
 
-#include "config_writer.h"
-#include "service_control.h"
-#include "utils.h"
-#include "wireguard.h"
+#include "../cpp/name_validator.h"
+#include "broker_client.h"
+#include "messages.g.h"
 
-using namespace flutter;
-using namespace std;
+namespace flutter_wireguard {
 
-namespace flutter_wireguard
-{
+namespace {
 
-  namespace
-  {
-    const unsigned long long WINDOWS_TO_UNIX_EPOCH_100NS = 116444736000000000ULL; // 1601->1970 offset
+// Cross-thread dispatcher: status callbacks fire on the BrokerClient reader
+// thread, but BinaryMessenger is engine-thread-affine. We park each event on a
+// hidden HWND_MESSAGE window and post WM_USER; the platform thread's message
+// loop drains the queue and calls WireguardFlutterApi::OnTunnelStatus.
+class StatusDispatcher {
+ public:
+  static constexpr UINT kWmDrain = WM_USER + 1;
 
-    inline long long filetime100nsToUnixMs(unsigned long long ticks100ns)
-    {
-      if (ticks100ns == 0 || ticks100ns < WINDOWS_TO_UNIX_EPOCH_100NS)
-      {
-        return 0;
-      }
-      return static_cast<long long>((ticks100ns - WINDOWS_TO_UNIX_EPOCH_100NS) / 10000ULL);
+  StatusDispatcher(flutter::BinaryMessenger* messenger,
+                   std::unique_ptr<WireguardFlutterApi> api)
+      : api_(std::move(api)) {
+    (void)messenger;
+    static std::once_flag once;
+    std::call_once(once, []() {
+      WNDCLASSW wc{};
+      wc.lpfnWndProc = &StatusDispatcher::WndProc;
+      wc.hInstance = ::GetModuleHandleW(nullptr);
+      wc.lpszClassName = L"FlutterWireguardDispatcher";
+      ::RegisterClassW(&wc);
+    });
+    hwnd_ = ::CreateWindowExW(0, L"FlutterWireguardDispatcher", nullptr, 0, 0,
+                              0, 0, 0, HWND_MESSAGE, nullptr,
+                              ::GetModuleHandleW(nullptr), nullptr);
+    if (hwnd_ != nullptr) {
+      ::SetWindowLongPtrW(hwnd_, GWLP_USERDATA,
+                          reinterpret_cast<LONG_PTR>(this));
     }
-
-    struct WireGuardApi
-    {
-      HMODULE module = nullptr;
-      WIREGUARD_OPEN_ADAPTER_FUNC *OpenAdapter = nullptr;
-      WIREGUARD_GET_CONFIGURATION_FUNC *GetConfiguration = nullptr;
-      WIREGUARD_CLOSE_ADAPTER_FUNC *CloseAdapter = nullptr;
-    };
-
-    inline bool LoadWireGuardApi(WireGuardApi &api)
-    {
-      if (api.module != nullptr)
-      {
-        return api.OpenAdapter && api.GetConfiguration && api.CloseAdapter;
-      }
-
-      api.module = LoadLibraryW(L"wireguard.dll");
-      if (!api.module)
-      {
-        return false;
-      }
-
-      api.OpenAdapter = reinterpret_cast<WIREGUARD_OPEN_ADAPTER_FUNC *>(GetProcAddress(api.module, "WireGuardOpenAdapter"));
-      api.GetConfiguration = reinterpret_cast<WIREGUARD_GET_CONFIGURATION_FUNC *>(GetProcAddress(api.module, "WireGuardGetConfiguration"));
-      api.CloseAdapter = reinterpret_cast<WIREGUARD_CLOSE_ADAPTER_FUNC *>(GetProcAddress(api.module, "WireGuardCloseAdapter"));
-
-      return api.OpenAdapter && api.GetConfiguration && api.CloseAdapter;
-    }
-
-    inline bool QueryWireGuardStats(const std::wstring &adapter_name, long long &out_rx, long long &out_tx, long long &out_handshake_ms)
-    {
-      out_rx = 0;
-      out_tx = 0;
-      out_handshake_ms = 0;
-
-      WireGuardApi api;
-      if (!LoadWireGuardApi(api))
-      {
-        return false;
-      }
-
-      WIREGUARD_ADAPTER_HANDLE adapter = api.OpenAdapter(adapter_name.c_str());
-      if (adapter == NULL)
-      {
-        return false;
-      }
-
-      // First attempt with a reasonable buffer, then grow if needed
-      DWORD alloc_bytes = sizeof(WIREGUARD_INTERFACE) + 64 * 1024;
-      std::vector<unsigned char> buffer(alloc_bytes);
-      DWORD bytes = alloc_bytes;
-
-      BOOL ok = api.GetConfiguration(adapter, reinterpret_cast<WIREGUARD_INTERFACE *>(buffer.data()), &bytes);
-      if (!ok && GetLastError() == ERROR_MORE_DATA)
-      {
-        buffer.resize(bytes);
-        ok = api.GetConfiguration(adapter, reinterpret_cast<WIREGUARD_INTERFACE *>(buffer.data()), &bytes);
-      }
-
-      if (!ok)
-      {
-        api.CloseAdapter(adapter);
-        return false;
-      }
-
-      auto *config = reinterpret_cast<WIREGUARD_INTERFACE *>(buffer.data());
-
-      unsigned char *cursor = reinterpret_cast<unsigned char *>(config) + sizeof(WIREGUARD_INTERFACE);
-      unsigned long long max_handshake_100ns = 0ULL;
-      unsigned long long sum_rx = 0ULL;
-      unsigned long long sum_tx = 0ULL;
-
-      for (DWORD i = 0; i < config->PeersCount; ++i)
-      {
-        auto *peer = reinterpret_cast<WIREGUARD_PEER *>(cursor);
-        sum_tx += peer->TxBytes;
-        sum_rx += peer->RxBytes;
-        if (peer->LastHandshake > max_handshake_100ns)
-        {
-          max_handshake_100ns = peer->LastHandshake;
-        }
-        cursor += sizeof(WIREGUARD_PEER) + peer->AllowedIPsCount * sizeof(WIREGUARD_ALLOWED_IP);
-      }
-
-      out_rx = static_cast<long long>(sum_rx);
-      out_tx = static_cast<long long>(sum_tx);
-      out_handshake_ms = filetime100nsToUnixMs(max_handshake_100ns);
-
-      api.CloseAdapter(adapter);
-      return true;
-    }
-  } // namespace
-
-  // static
-  void FlutterWireguardPlugin::RegisterWithRegistrar(PluginRegistrarWindows *registrar)
-  {
-    auto channel = std::make_unique<MethodChannel<EncodableValue>>(
-        registrar->messenger(), "dev.fluttercommunity.flutter_wireguard/methodChannel", &StandardMethodCodec::GetInstance());
-    auto eventChannel = std::make_unique<EventChannel<EncodableValue>>(
-        registrar->messenger(), "dev.fluttercommunity.flutter_wireguard/eventChannel", &StandardMethodCodec::GetInstance());
-
-    auto plugin = std::make_unique<FlutterWireguardPlugin>();
-
-    channel->SetMethodCallHandler([plugin_pointer = plugin.get()](const auto &call, auto result)
-                                  { plugin_pointer->HandleMethodCall(call, move(result)); });
-
-    auto eventsHandler = std::make_unique<StreamHandlerFunctions<EncodableValue>>(
-        [plugin_pointer = plugin.get()](
-            const EncodableValue *arguments,
-            unique_ptr<EventSink<EncodableValue>> &&events)
-            -> unique_ptr<StreamHandlerError<EncodableValue>>
-        {
-          return plugin_pointer->OnListen(arguments, move(events));
-        },
-        [plugin_pointer = plugin.get()](const EncodableValue *arguments)
-            -> unique_ptr<StreamHandlerError<EncodableValue>>
-        {
-          return plugin_pointer->OnCancel(arguments);
-        });
-
-    eventChannel->SetStreamHandler(move(eventsHandler));
-
-    registrar->AddPlugin(move(plugin));
   }
 
-  FlutterWireguardPlugin::FlutterWireguardPlugin() {}
-
-  FlutterWireguardPlugin::~FlutterWireguardPlugin() {}
-
-  void FlutterWireguardPlugin::HandleMethodCall(const MethodCall<EncodableValue> &call,
-                                                unique_ptr<MethodResult<EncodableValue>> result)
-  {
-    const auto *args = std::get_if<EncodableMap>(call.arguments());
-
-    if (call.method_name() == "start")
-    {
-      const auto *name_ptr = std::get_if<std::string>(ValueOrNull(*args, "name"));
-      if (name_ptr == nullptr)
-      {
-        result->Error("Argument 'name' is required");
-        return;
-      }
-
-      auto tunnel_service = this->tunnel_service_.get();
-      if (tunnel_service == nullptr)
-      {
-        this->tunnel_service_ = std::make_unique<ServiceControl>(Utf8ToWide(*name_ptr));
-        this->tunnel_service_->RegisterListener(std::move(events_));
-        tunnel_service = this->tunnel_service_.get();
-      }
-      else
-      {
-        tunnel_service->service_name_ = Utf8ToWide(*name_ptr);
-      }
-
-      const auto *config = std::get_if<std::string>(ValueOrNull(*args, "config"));
-      if (config == NULL)
-      {
-        result->Error("Argument 'config' is required");
-        return;
-      }
-
-      wstring wg_config_filename;
-      try
-      {
-        wg_config_filename = WriteConfigToTempFile(*name_ptr, *config);
-      }
-      catch (exception &e)
-      {
-        result->Error(string("Could not write wireguard config: ").append(e.what()));
-        return;
-      }
-
-      wchar_t module_filename[MAX_PATH];
-      GetModuleFileName(NULL, module_filename, MAX_PATH);
-      auto current_exec_dir = wstring(module_filename);
-      current_exec_dir = current_exec_dir.substr(0, current_exec_dir.find_last_of(L"\\/"));
-      wostringstream service_exec_builder;
-      service_exec_builder << L"\"" << current_exec_dir << L"\\wireguard_svc.exe\"" << L" -service"
-                           << L" -config-file=\"" << wg_config_filename << L"\"";
-      wstring service_exec = service_exec_builder.str();
-      Log(L"Starting service with command line: " + service_exec);
-      try
-      {
-        CreateArgs csa;
-        csa.description = tunnel_service->service_name_ + L" WireGuard tunnel";
-        csa.executable_and_args = service_exec;
-        csa.dependencies = L"Nsi\0TcpIp\0";
-        csa.first_time = true;
-
-        tunnel_service->CreateAndStart(csa);
-      }
-      catch (exception &e)
-      {
-        result->Error(string(e.what()));
-        return;
-      }
-
-      result->Success();
-      return;
-    }
-    else if (call.method_name() == "stop")
-    {
-      const auto *name_ptr = std::get_if<std::string>(ValueOrNull(*args, "name"));
-      if (name_ptr == nullptr)
-      {
-        result->Error("Argument 'name' is required");
-        return;
-      }
-
-      auto tunnel_service = this->tunnel_service_.get();
-      if (tunnel_service == nullptr)
-      {
-        this->tunnel_service_ = std::make_unique<ServiceControl>(Utf8ToWide(*name_ptr));
-        this->tunnel_service_->RegisterListener(std::move(events_));
-        tunnel_service = this->tunnel_service_.get();
-      }
-
-      try
-      {
-        tunnel_service->Stop();
-      }
-      catch (exception &e)
-      {
-        result->Error(string(e.what()));
-      }
-
-      result->Success();
-      return;
-    }
-    else if (call.method_name() == "status")
-    {
-      const auto *name_ptr = std::get_if<std::string>(ValueOrNull(*args, "name"));
-      if (name_ptr == nullptr)
-      {
-        result->Error("Argument 'name' is required");
-        return;
-      }
-
-      auto tunnel_service = this->tunnel_service_.get();
-      if (tunnel_service == nullptr)
-      {
-        this->tunnel_service_ = std::make_unique<ServiceControl>(Utf8ToWide(*name_ptr));
-        this->tunnel_service_->RegisterListener(std::move(events_));
-        tunnel_service = this->tunnel_service_.get();
-      }
-
-      std::string state = tunnel_service->GetStatus() == "connected" ? "UP" : "DOWN";
-
-      long long tx = 0, rx = 0, handshake = 0;
-
-      // Try to read real-time statistics from the WireGuard driver
-      try
-      {
-        std::wstring adapter_name = Utf8ToWide(*name_ptr);
-        QueryWireGuardStats(adapter_name, rx, tx, handshake);
-      }
-      catch (...)
-      {
-        // Best-effort; leave zeros on failure
-      }
-
-      flutter::EncodableMap map = {{flutter::EncodableValue("name"), flutter::EncodableValue(*name_ptr)},
-                                   {flutter::EncodableValue("state"), flutter::EncodableValue(state)},
-                                   {flutter::EncodableValue("tx"), flutter::EncodableValue(tx)},
-                                   {flutter::EncodableValue("rx"), flutter::EncodableValue(rx)},
-                                   {flutter::EncodableValue("handshake"), flutter::EncodableValue(handshake)}};
-      result->Success(flutter::EncodableValue(map));
-      return;
-    }
-
-    result->NotImplemented();
+  ~StatusDispatcher() {
+    if (hwnd_ != nullptr) ::DestroyWindow(hwnd_);
   }
 
-  unique_ptr<StreamHandlerError<EncodableValue>> FlutterWireguardPlugin::OnListen(
-      const EncodableValue *arguments,
-      unique_ptr<EventSink<EncodableValue>> &&events)
-  {
-    events_ = move(events);
-    auto tunnel_service = this->tunnel_service_.get();
-    if (tunnel_service != nullptr)
+  void Post(BrokerStatus s) {
     {
-      tunnel_service->RegisterListener(move(events_));
-      return nullptr;
+      std::lock_guard<std::mutex> lock(mu_);
+      queue_.push(std::move(s));
     }
-
-    return nullptr;
+    if (hwnd_ != nullptr) ::PostMessage(hwnd_, kWmDrain, 0, 0);
   }
 
-  unique_ptr<StreamHandlerError<EncodableValue>> FlutterWireguardPlugin::OnCancel(
-      const EncodableValue *arguments)
-  {
-    events_ = nullptr;
-    auto tunnel_service = this->tunnel_service_.get();
-    if (tunnel_service != nullptr)
-    {
-      tunnel_service->UnregisterListener();
-      return nullptr;
+ private:
+  static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    if (msg == kWmDrain) {
+      auto* self = reinterpret_cast<StatusDispatcher*>(
+          ::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+      if (self != nullptr) self->Drain();
+      return 0;
     }
-
-    return nullptr;
+    return ::DefWindowProcW(hwnd, msg, wp, lp);
   }
 
-} // namespace flutter_wireguard
+  void Drain() {
+    std::queue<BrokerStatus> local;
+    {
+      std::lock_guard<std::mutex> lock(mu_);
+      std::swap(local, queue_);
+    }
+    while (!local.empty()) {
+      const auto& s = local.front();
+      TunnelStatus st(s.name,
+                      s.state == 2 ? TunnelState::kUp
+                                    : (s.state == 1 ? TunnelState::kToggle
+                                                    : TunnelState::kDown),
+                      s.rx, s.tx, s.handshake_ms);
+      api_->OnTunnelStatus(st, [] {}, [](const FlutterError&) {});
+      local.pop();
+    }
+  }
+
+  std::unique_ptr<WireguardFlutterApi> api_;
+  HWND hwnd_ = nullptr;
+  std::mutex mu_;
+  std::queue<BrokerStatus> queue_;
+};
+
+std::unique_ptr<StatusDispatcher>& Dispatcher() {
+  static std::unique_ptr<StatusDispatcher> d;
+  return d;
+}
+
+}  // namespace
+
+// static
+void FlutterWireguardPlugin::RegisterWithRegistrar(
+    flutter::PluginRegistrarWindows* registrar) {
+  auto plugin = std::make_unique<FlutterWireguardPlugin>(registrar->messenger());
+  WireguardHostApi::SetUp(registrar->messenger(), plugin.get());
+  registrar->AddPlugin(std::move(plugin));
+}
+
+FlutterWireguardPlugin::FlutterWireguardPlugin(
+    flutter::BinaryMessenger* messenger) {
+  auto api = std::make_unique<WireguardFlutterApi>(messenger);
+  Dispatcher() = std::make_unique<StatusDispatcher>(messenger, std::move(api));
+
+  BrokerClient::Instance().SetStatusCallback([](const BrokerStatus& s) {
+    if (auto& d = Dispatcher()) d->Post(s);
+  });
+}
+
+FlutterWireguardPlugin::~FlutterWireguardPlugin() {
+  BrokerClient::Instance().SetStatusCallback({});
+  Dispatcher().reset();
+}
+
+void FlutterWireguardPlugin::Start(
+    const std::string& name, const std::string& config,
+    std::function<void(std::optional<FlutterError> reply)> result) {
+  if (!IsValidTunnelName(name)) {
+    result(FlutterError("START_FAILED", "invalid tunnel name"));
+    return;
+  }
+  // Run on a worker thread: launching the broker (UAC + pipe handshake) can
+  // block several seconds.
+  std::thread([name, config, result = std::move(result)]() mutable {
+    try {
+      BrokerClient::Instance().Start(name, config);
+      result(std::nullopt);
+    } catch (const std::exception& e) {
+      result(FlutterError("START_FAILED", e.what()));
+    }
+  }).detach();
+}
+
+void FlutterWireguardPlugin::Stop(
+    const std::string& name,
+    std::function<void(std::optional<FlutterError> reply)> result) {
+  if (!IsValidTunnelName(name)) {
+    result(FlutterError("STOP_FAILED", "invalid tunnel name"));
+    return;
+  }
+  std::thread([name, result = std::move(result)]() mutable {
+    try {
+      BrokerClient::Instance().Stop(name);
+      result(std::nullopt);
+    } catch (const std::exception& e) {
+      result(FlutterError("STOP_FAILED", e.what()));
+    }
+  }).detach();
+}
+
+void FlutterWireguardPlugin::Status(
+    const std::string& name,
+    std::function<void(ErrorOr<TunnelStatus> reply)> result) {
+  if (!IsValidTunnelName(name)) {
+    result(FlutterError("STATUS_FAILED", "invalid tunnel name"));
+    return;
+  }
+  std::thread([name, result = std::move(result)]() mutable {
+    try {
+      BrokerStatus s = BrokerClient::Instance().Status(name);
+      TunnelStatus st(s.name,
+                      s.state == 2 ? TunnelState::kUp
+                                    : (s.state == 1 ? TunnelState::kToggle
+                                                    : TunnelState::kDown),
+                      s.rx, s.tx, s.handshake_ms);
+      result(st);
+    } catch (const std::exception& e) {
+      result(FlutterError("STATUS_FAILED", e.what()));
+    }
+  }).detach();
+}
+
+void FlutterWireguardPlugin::TunnelNames(
+    std::function<void(ErrorOr<flutter::EncodableList> reply)> result) {
+  std::thread([result = std::move(result)]() mutable {
+    try {
+      auto names = BrokerClient::Instance().TunnelNames();
+      flutter::EncodableList out;
+      out.reserve(names.size());
+      for (auto& n : names) out.emplace_back(n);
+      result(out);
+    } catch (const std::exception& e) {
+      result(FlutterError("LIST_FAILED", e.what()));
+    }
+  }).detach();
+}
+
+void FlutterWireguardPlugin::Backend(
+    std::function<void(ErrorOr<BackendInfo> reply)> result) {
+  std::thread([result = std::move(result)]() mutable {
+    try {
+      BrokerBackend b = BrokerClient::Instance().Backend();
+      BackendKind kind = BackendKind::kUnknown;
+      if (b.kind == 0) kind = BackendKind::kKernel;
+      else if (b.kind == 1) kind = BackendKind::kUserspace;
+      result(BackendInfo(kind, b.detail));
+    } catch (const std::exception& e) {
+      result(FlutterError("BACKEND_FAILED", e.what()));
+    }
+  }).detach();
+}
+
+}  // namespace flutter_wireguard

@@ -1,6 +1,11 @@
-# Porting blueprint: iOS, macOS, Windows
+# Porting blueprint: iOS, macOS
 
-This document describes how to bring the remaining platforms up to parity with Android and Linux. The Pigeon contract in [pigeons/messages.dart](pigeons/messages.dart) is the source of truth — every platform must implement the same `WireguardHostApi` and emit `WireguardFlutterApi.onTunnelStatus` events.
+> Windows landed in 0.2.0 — see [`README.md` § Windows](../README.md#windows)
+> for the runtime architecture and [`WINDOWS_SETUP.md`](WINDOWS_SETUP.md) for
+> the local-test setup. The blueprint kept below targets the remaining Apple
+> platforms.
+
+This document describes how to bring the remaining platforms up to parity with Android, Linux and Windows. The Pigeon contract in [pigeons/messages.dart](pigeons/messages.dart) is the source of truth — every platform must implement the same `WireguardHostApi` and emit `WireguardFlutterApi.onTunnelStatus` events.
 
 ## Contract recap
 
