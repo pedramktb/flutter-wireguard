@@ -9,14 +9,10 @@ import android.net.VpnService
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import com.wireguard.android.backend.Tunnel
 import io.flutter.embedding.engine.plugins.FlutterPlugin
 import io.flutter.embedding.engine.plugins.activity.ActivityAware
 import io.flutter.embedding.engine.plugins.activity.ActivityPluginBinding
-import io.flutter.plugin.common.EventChannel
-import io.flutter.plugin.common.MethodCall
-import io.flutter.plugin.common.MethodChannel
-import io.flutter.plugin.common.MethodChannel.MethodCallHandler
-import io.flutter.plugin.common.MethodChannel.Result
 import io.flutter.plugin.common.PluginRegistry.ActivityResultListener
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -26,255 +22,178 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import org.json.JSONObject
 
-private const val permissionRequestCode = 10014
+private const val PERMISSION_REQUEST_CODE = 10014
 
 /**
- * Runs in the MAIN process alongside Flutter
+ * Lives in the MAIN process. Implements the Pigeon-generated [WireguardHostApi]
+ * by delegating to the [IWireguard] AIDL binder exported by [WireguardService]
+ * (which lives in the :wireguard process and owns libwg-go.so).
  *
- * It never imports GoBackend and never calls System.loadLibrary("wg-go"), so
- * the wireguard-go runtime stays isolated in the ':wireguard' process where
- * WireguardService lives.
- *
- * VPN permission is requested here because it needs a foreground Activity.
- * android.net.VpnService.prepare() (the base class) is used — it does not load
- * any WireGuard native library.
+ * Status events are forwarded to Dart via [WireguardFlutterApi].
  */
-class FlutterWireguardPlugin : FlutterPlugin, MethodCallHandler, ActivityAware, ActivityResultListener {
-
-    private lateinit var methodChannel: MethodChannel
-    private lateinit var eventChannel: EventChannel
+class FlutterWireguardPlugin :
+    FlutterPlugin,
+    ActivityAware,
+    ActivityResultListener,
+    WireguardHostApi {
 
     private var appContext: Context? = null
     private var activity: Activity? = null
-    private var eventSink: EventChannel.EventSink? = null
+    private var activityBinding: ActivityPluginBinding? = null
+    private var flutterApi: WireguardFlutterApi? = null
 
-    // Background scope for blocking cross-process AIDL calls.
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-    // EventSink must be touched on the main thread.
     private val mainHandler = Handler(Looper.getMainLooper())
 
-    // Binder proxy to WireguardService running in ':wireguard' process.
     @Volatile private var wireguardService: IWireguard? = null
-
-    // Guard against rebinding during teardown (onDetachedFromEngine).
     @Volatile private var isEngineAttached = false
 
-    // Stored binding reference for removing the ActivityResultListener on detach.
-    private var activityBinding: ActivityPluginBinding? = null
-
-    // ------------------------------------------------------------------
-    // Service connection
-    // ------------------------------------------------------------------
+    private val callback = object : IWireguardCallback.Stub() {
+        override fun onTunnelStatus(
+            name: String, state: String, rx: Long, tx: Long, handshake: Long
+        ) {
+            mainHandler.post {
+                flutterApi?.onTunnelStatus(
+                    TunnelStatus(
+                        name = name,
+                        state = state.toPigeonState(),
+                        rx = rx,
+                        tx = tx,
+                        handshake = handshake,
+                    )
+                ) { /* ignore reply */ }
+            }
+        }
+    }
 
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName, binder: IBinder) {
             val svc = IWireguard.Stub.asInterface(binder)
             try {
-                svc.registerCallback(wireguardCallback)
+                svc.registerCallback(callback)
                 wireguardService = svc
             } catch (_: Exception) {
-                // Binder failure during registration; clear and retry.
                 wireguardService = null
-                appContext?.let { bindWireguardService(it) }
+                appContext?.let { rebind(it) }
             }
         }
-
         override fun onServiceDisconnected(name: ComponentName) {
-            // Remote ':wireguard' process was killed; attempt to rebind only if still attached.
             wireguardService = null
-            if (isEngineAttached) {
-                appContext?.let { bindWireguardService(it) }
-            }
+            if (isEngineAttached) appContext?.let { rebind(it) }
         }
     }
 
-    // Receives live status events from WireguardService (called on a Binder thread).
-    private val wireguardCallback = object : IWireguardCallback.Stub() {
-        override fun onTunnelStatus(
-            name: String, state: String, rx: Long, tx: Long, handshake: Long
-        ) {
-            mainHandler.post {
-                eventSink?.success(
-                    mapOf(
-                        "name" to name,
-                        "state" to state,
-                        "rx" to rx,
-                        "tx" to tx,
-                        "handshake" to handshake
-                    )
-                )
-            }
-        }
+    private fun rebind(ctx: Context) {
+        ctx.bindService(Intent(ctx, WireguardService::class.java), serviceConnection, Context.BIND_AUTO_CREATE)
     }
 
-    private fun bindWireguardService(ctx: Context) {
-        val intent = Intent(ctx, WireguardService::class.java)
-        ctx.bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE)
-    }
-
-    // ------------------------------------------------------------------
-    // FlutterPlugin
-    // ------------------------------------------------------------------
+    // ---- FlutterPlugin -------------------------------------------------
 
     override fun onAttachedToEngine(binding: FlutterPlugin.FlutterPluginBinding) {
         isEngineAttached = true
         appContext = binding.applicationContext
-
-        methodChannel = MethodChannel(
-            binding.binaryMessenger,
-            "com.pedramktb.flutter_wireguard/methodChannel"
-        )
-        methodChannel.setMethodCallHandler(this)
-
-        eventChannel = EventChannel(
-            binding.binaryMessenger,
-            "com.pedramktb.flutter_wireguard/eventChannel"
-        )
-        eventChannel.setStreamHandler(object : EventChannel.StreamHandler {
-            override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
-                eventSink = events
-            }
-            override fun onCancel(arguments: Any?) {
-                eventSink = null
-            }
-        })
-
-        bindWireguardService(binding.applicationContext)
+        WireguardHostApi.setUp(binding.binaryMessenger, this)
+        flutterApi = WireguardFlutterApi(binding.binaryMessenger)
+        rebind(binding.applicationContext)
     }
 
     override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
-        // Mark as detached before unbind to prevent onServiceDisconnected from rebinding.
         isEngineAttached = false
-        eventSink = null
-        try { wireguardService?.unregisterCallback(wireguardCallback) } catch (_: Exception) {}
+        try { wireguardService?.unregisterCallback(callback) } catch (_: Exception) {}
         try { appContext?.unbindService(serviceConnection) } catch (_: Exception) {}
-
         wireguardService = null
+        WireguardHostApi.setUp(binding.binaryMessenger, null)
+        flutterApi = null
         appContext = null
-
-        methodChannel.setMethodCallHandler(null)
-        eventChannel.setStreamHandler(null)
         scope.cancel(CancellationException("Plugin detached"))
     }
 
-    // ------------------------------------------------------------------
-    // MethodCallHandler
-    // ------------------------------------------------------------------
+    // ---- ActivityAware (VPN permission) -------------------------------
 
-    override fun onMethodCall(call: MethodCall, result: Result) {
-        val svc = wireguardService
-        if (svc == null) {
-            result.error("NOT_CONNECTED", "WireguardService not yet bound", null)
-            return
-        }
+    override fun onAttachedToActivity(binding: ActivityPluginBinding) = bindActivity(binding)
+    override fun onReattachedToActivityForConfigChanges(binding: ActivityPluginBinding) = bindActivity(binding)
+    override fun onDetachedFromActivity() = unbindActivity()
+    override fun onDetachedFromActivityForConfigChanges() = unbindActivity()
 
-        when (call.method) {
-            "start" -> {
-                val name: String = call.argument("name")!!
-                val config: String = call.argument("config")!!
-                // AIDL start() blocks until GoBackend state change completes — run on IO.
-                scope.launch {
-                    try {
-                        svc.start(name, config)
-                        mainHandler.post { result.success(null) }
-                    } catch (e: Exception) {
-                        mainHandler.post { result.error("START_FAILED", e.message, null) }
-                    }
-                }
-            }
-
-            "stop" -> {
-                val name: String = call.argument("name")!!
-                scope.launch {
-                    try {
-                        svc.stop(name)
-                        mainHandler.post { result.success(null) }
-                    } catch (e: Exception) {
-                        mainHandler.post { result.error("STOP_FAILED", e.message, null) }
-                    }
-                }
-            }
-
-            "status" -> {
-                val name: String = call.argument("name")!!
-                scope.launch {
-                    try {
-                        val obj = JSONObject(svc.statusJson(name))
-                        val map = mapOf(
-                            "name" to obj.getString("name"),
-                            "state" to obj.getString("state"),
-                            "rx" to obj.getLong("rx"),
-                            "tx" to obj.getLong("tx"),
-                            "handshake" to obj.getLong("handshake")
-                        )
-                        mainHandler.post { result.success(map) }
-                    } catch (e: Exception) {
-                        mainHandler.post { result.error("STATUS_FAILED", e.message, null) }
-                    }
-                }
-            }
-
-            "backendType" -> {
-                scope.launch {
-                    try {
-                        val type = svc.backendType()
-                        mainHandler.post { result.success(type) }
-                    } catch (e: Exception) {
-                        mainHandler.post { result.error("BACKEND_TYPE_FAILED", e.message, null) }
-                    }
-                }
-            }
-
-            else -> result.notImplemented()
-        }
-    }
-
-    // ------------------------------------------------------------------
-    // ActivityAware — VPN permission (no GoBackend involved)
-    // ------------------------------------------------------------------
-
-    override fun onAttachedToActivity(binding: ActivityPluginBinding) {
+    private fun bindActivity(binding: ActivityPluginBinding) {
         activityBinding = binding
         activity = binding.activity
         binding.addActivityResultListener(this)
         requestVpnPermission()
     }
 
-    override fun onReattachedToActivityForConfigChanges(binding: ActivityPluginBinding) {
-        activityBinding = binding
-        activity = binding.activity
-        binding.addActivityResultListener(this)
-        requestVpnPermission()
-    }
-
-    override fun onDetachedFromActivity() {
+    private fun unbindActivity() {
         activityBinding?.removeActivityResultListener(this)
         activityBinding = null
         activity = null
     }
 
-    override fun onDetachedFromActivityForConfigChanges() {
-        activityBinding?.removeActivityResultListener(this)
-        activityBinding = null
-        activity = null
-    }
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?): Boolean =
+        requestCode == PERMISSION_REQUEST_CODE
 
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?): Boolean {
-        if (requestCode != permissionRequestCode) return false
-        // Always consume the VPN permission result (granted or denied).
-        return true
-    }
-
-    /**
-     * Request VPN permission using the base android.net.VpnService — not GoBackend.VpnService.
-     * This does NOT import or instantiate GoBackend so libwg-go.so is never mapped in the
-     * main process.
-     */
     private fun requestVpnPermission() {
         val act = activity ?: return
         val intent = VpnService.prepare(act)
-        if (intent != null) {
-            act.startActivityForResult(intent, permissionRequestCode)
+        if (intent != null) act.startActivityForResult(intent, PERMISSION_REQUEST_CODE)
+    }
+
+    // ---- WireguardHostApi (Pigeon) ------------------------------------
+
+    private inline fun <T> withService(
+        crossinline callback: (Result<T>) -> Unit,
+        crossinline block: (IWireguard) -> T,
+    ) {
+        val svc = wireguardService
+        if (svc == null) {
+            callback(Result.failure(FlutterError("NOT_CONNECTED", "WireguardService not yet bound")))
+            return
+        }
+        scope.launch {
+            try {
+                val r = block(svc)
+                mainHandler.post { callback(Result.success(r)) }
+            } catch (e: Exception) {
+                mainHandler.post { callback(Result.failure(FlutterError("BACKEND_FAILED", e.message ?: e.javaClass.simpleName))) }
+            }
         }
     }
+
+    override fun start(name: String, config: String, callback: (Result<Unit>) -> Unit) =
+        withService(callback) { it.start(name, config) }
+
+    override fun stop(name: String, callback: (Result<Unit>) -> Unit) =
+        withService(callback) { it.stop(name) }
+
+    override fun status(name: String, callback: (Result<TunnelStatus>) -> Unit) =
+        withService(callback) {
+            val o = JSONObject(it.statusJson(name))
+            TunnelStatus(
+                name = o.getString("name"),
+                state = o.getString("state").toPigeonState(),
+                rx = o.getLong("rx"),
+                tx = o.getLong("tx"),
+                handshake = o.getLong("handshake"),
+            )
+        }
+
+    override fun tunnelNames(callback: (Result<List<String>>) -> Unit) =
+        withService(callback) { it.tunnelNames().toList() }
+
+    override fun backend(callback: (Result<BackendInfo>) -> Unit) =
+        withService(callback) {
+            val o = JSONObject(it.backendJson())
+            BackendInfo(kind = o.getString("kind").toPigeonBackend(), detail = o.getString("detail"))
+        }
+}
+
+internal fun String.toPigeonState(): TunnelState = when (Tunnel.State.valueOf(this)) {
+    Tunnel.State.UP -> TunnelState.UP
+    Tunnel.State.DOWN -> TunnelState.DOWN
+    Tunnel.State.TOGGLE -> TunnelState.TOGGLE
+}
+
+internal fun String.toPigeonBackend(): BackendKind = when (this) {
+    "kernel" -> BackendKind.KERNEL
+    "userspace" -> BackendKind.USERSPACE
+    else -> BackendKind.UNKNOWN
 }
