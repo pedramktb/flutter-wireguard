@@ -2,9 +2,13 @@
 
 #include <windows.h>
 
+#include <atomic>
+#include <condition_variable>
 #include <cstdio>
 #include <cstring>
+#include <memory>
 #include <mutex>
+#include <thread>
 #include <vector>
 
 #include "../../cpp/ipc_protocol.h"
@@ -25,7 +29,18 @@ bool ReadFully(HANDLE pipe, void* buf, DWORD len) {
   BYTE* p = static_cast<BYTE*>(buf);
   while (len > 0) {
     DWORD got = 0;
-    if (!::ReadFile(pipe, p, len, &got, nullptr) || got == 0) return false;
+    OVERLAPPED ov{};
+    ov.hEvent = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    if (ov.hEvent == nullptr) return false;
+    BOOL ok = ::ReadFile(pipe, p, len, &got, &ov);
+    if (!ok && ::GetLastError() == ERROR_IO_PENDING) {
+      ok = ::GetOverlappedResult(pipe, &ov, &got, TRUE);
+    }
+    ::CloseHandle(ov.hEvent);
+    if (!ok || got == 0) {
+      Log(ErrorWithCode("broker ReadFile", ::GetLastError()));
+      return false;
+    }
     p += got;
     len -= got;
   }
@@ -36,7 +51,15 @@ bool WriteFully(HANDLE pipe, const void* buf, DWORD len) {
   const BYTE* p = static_cast<const BYTE*>(buf);
   while (len > 0) {
     DWORD wrote = 0;
-    if (!::WriteFile(pipe, p, len, &wrote, nullptr) || wrote == 0) return false;
+    OVERLAPPED ov{};
+    ov.hEvent = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    if (ov.hEvent == nullptr) return false;
+    BOOL ok = ::WriteFile(pipe, p, len, &wrote, &ov);
+    if (!ok && ::GetLastError() == ERROR_IO_PENDING) {
+      ok = ::GetOverlappedResult(pipe, &ov, &wrote, TRUE);
+    }
+    ::CloseHandle(ov.hEvent);
+    if (!ok || wrote == 0) return false;
     p += wrote;
     len -= wrote;
   }
@@ -114,111 +137,150 @@ void Broker::EmitStatus(HANDLE pipe, const TunnelStatusSnapshot& s) {
       payload);
   // Best-effort: ignore failures (client disconnected; HandleClient's read
   // loop will see it next).
-  DWORD wrote = 0;
-  ::WriteFile(pipe, frame.data(), static_cast<DWORD>(frame.size()), &wrote,
-              nullptr);
+  WriteFully(pipe, frame.data(), static_cast<DWORD>(frame.size()));
 }
 
 void Broker::HandleClient(HANDLE pipe) {
-  std::mutex pipe_write_mu;
+  auto pipe_write_mu = std::make_shared<std::mutex>();
   manager_->SetStatusCallback(
-      [this, pipe, &pipe_write_mu](const TunnelStatusSnapshot& s) {
-        std::lock_guard<std::mutex> lock(pipe_write_mu);
+      [this, pipe, pipe_write_mu](const TunnelStatusSnapshot& s) {
+        std::lock_guard<std::mutex> lock(*pipe_write_mu);
         EmitStatus(pipe, s);
       });
+
+  // Track in-flight worker threads so we can join them before we let the
+  // pipe handle close in the caller.
+  std::mutex inflight_mu;
+  std::condition_variable inflight_cv;
+  int inflight = 0;
+  std::atomic<bool> write_failed{false};
 
   for (;;) {
     uint32_t op = 0, seq = 0;
     uint8_t flags = 0;
     std::vector<uint8_t> payload;
-    if (!ReadFrame(pipe, &op, &seq, &flags, &payload)) break;
+    if (!ReadFrame(pipe, &op, &seq, &flags, &payload)) {
+      break;
+    }
+    if (write_failed.load()) break;
 
-    std::vector<uint8_t> resp;
-    try {
-      ipc_ns::Reader r(payload.data(), payload.size());
-      switch (op) {
-        case ipc_ns::kOpHello: {
-          uint32_t client_v = r.U32();
-          if (client_v != ipc_ns::kProtocolVersion) {
-            resp = Err("protocol version mismatch");
-            break;
-          }
-          ipc_ns::Writer w;
-          w.U8(ipc_ns::kStatusOk);
-          w.U32(ipc_ns::kProtocolVersion);
-          resp = w.Take();
-          break;
-        }
-        case ipc_ns::kOpStart: {
-          std::string name = r.Str();
-          std::string config = r.Str();
-          if (!IsValidTunnelName(name)) {
-            resp = Err("invalid tunnel name");
-            break;
-          }
-          if (config.size() > ipc_ns::kMaxConfigBytes) {
-            resp = Err("config too large");
-            break;
-          }
-          manager_->Start(name, config);
-          resp = Ok();
-          break;
-        }
-        case ipc_ns::kOpStop: {
-          std::string name = r.Str();
-          if (!IsValidTunnelName(name)) {
-            resp = Err("invalid tunnel name");
-            break;
-          }
-          manager_->Stop(name);
-          resp = Ok();
-          break;
-        }
-        case ipc_ns::kOpStatus: {
-          std::string name = r.Str();
-          if (!IsValidTunnelName(name)) {
-            resp = Err("invalid tunnel name");
-            break;
-          }
-          TunnelStatusSnapshot s = manager_->Status(name);
-          resp = EncodeStatus(s);
-          break;
-        }
-        case ipc_ns::kOpTunnelNames: {
-          ipc_ns::Writer w;
-          w.U8(ipc_ns::kStatusOk);
-          auto names = manager_->TunnelNames();
-          w.U32(static_cast<uint32_t>(names.size()));
-          for (const auto& n : names) w.Str(n);
-          resp = w.Take();
-          break;
-        }
-        case ipc_ns::kOpBackend: {
-          ipc_ns::Writer w;
-          w.U8(ipc_ns::kStatusOk);
-          BackendInfoSnapshot b = manager_->Backend();
-          w.U8(b.kind);
-          w.Str(b.detail);
-          resp = w.Take();
-          break;
-        }
-        case ipc_ns::kOpSubscribe: {
-          // Already subscribed (callback is wired above). Just ack.
-          resp = Ok();
-          break;
-        }
-        default:
-          resp = Err("unknown op");
-          break;
-      }
-    } catch (const std::exception& e) {
-      resp = Err(e.what());
-    } catch (...) {
-      resp = Err("unknown error");
+    {
+      std::lock_guard<std::mutex> lk(inflight_mu);
+      ++inflight;
     }
 
-    std::lock_guard<std::mutex> lock(pipe_write_mu);
-    if (!WriteResponse(pipe, seq, resp)) break;
+    std::thread([this, pipe, pipe_write_mu, op, seq, payload = std::move(payload),
+                 &inflight_mu, &inflight_cv, &inflight, &write_failed]() mutable {
+      std::vector<uint8_t> resp;
+      try {
+        ipc_ns::Reader r(payload.data(), payload.size());
+        switch (op) {
+          case ipc_ns::kOpHello: {
+            uint32_t client_v = r.U32();
+            if (client_v != ipc_ns::kProtocolVersion) {
+              resp = Err("protocol version mismatch");
+              break;
+            }
+            ipc_ns::Writer w;
+            w.U8(ipc_ns::kStatusOk);
+            w.U32(ipc_ns::kProtocolVersion);
+            resp = w.Take();
+            break;
+          }
+          case ipc_ns::kOpStart: {
+            std::string name = r.Str();
+            std::string config = r.Str();
+            if (!IsValidTunnelName(name)) {
+              resp = Err("invalid tunnel name");
+              break;
+            }
+            if (config.size() > ipc_ns::kMaxConfigBytes) {
+              resp = Err("config too large");
+              break;
+            }
+            // Reject obviously empty/garbage configs early so we don't churn
+            // SCM with services that can't possibly come up.
+            if (config.find("[Interface]") == std::string::npos) {
+              resp = Err("config missing [Interface] section");
+              break;
+            }
+            if (config.find("PrivateKey") == std::string::npos) {
+              resp = Err("config missing PrivateKey");
+              break;
+            }
+            manager_->Start(name, config);
+            resp = Ok();
+            break;
+          }
+          case ipc_ns::kOpStop: {
+            std::string name = r.Str();
+            if (!IsValidTunnelName(name)) {
+              resp = Err("invalid tunnel name");
+              break;
+            }
+            manager_->Stop(name);
+            resp = Ok();
+            break;
+          }
+          case ipc_ns::kOpStatus: {
+            std::string name = r.Str();
+            if (!IsValidTunnelName(name)) {
+              resp = Err("invalid tunnel name");
+              break;
+            }
+            TunnelStatusSnapshot s = manager_->Status(name);
+            resp = EncodeStatus(s);
+            break;
+          }
+          case ipc_ns::kOpTunnelNames: {
+            ipc_ns::Writer w;
+            w.U8(ipc_ns::kStatusOk);
+            auto names = manager_->TunnelNames();
+            w.U32(static_cast<uint32_t>(names.size()));
+            for (const auto& n : names) w.Str(n);
+            resp = w.Take();
+            break;
+          }
+          case ipc_ns::kOpBackend: {
+            ipc_ns::Writer w;
+            w.U8(ipc_ns::kStatusOk);
+            BackendInfoSnapshot b = manager_->Backend();
+            w.U8(b.kind);
+            w.Str(b.detail);
+            resp = w.Take();
+            break;
+          }
+          case ipc_ns::kOpSubscribe: {
+            resp = Ok();
+            break;
+          }
+          default:
+            resp = Err("unknown op");
+            break;
+        }
+      } catch (const std::exception& e) {
+        resp = Err(e.what() ? e.what() : "");
+      } catch (...) {
+        resp = Err("unknown error");
+      }
+
+      {
+        std::lock_guard<std::mutex> lock(*pipe_write_mu);
+        if (!WriteResponse(pipe, seq, resp)) {
+          write_failed.store(true);
+        }
+      }
+      {
+        std::lock_guard<std::mutex> lk(inflight_mu);
+        if (--inflight == 0) inflight_cv.notify_all();
+      }
+    }).detach();
+  }
+
+  // Drain any in-flight workers before we tear the pipe down.
+  {
+    std::unique_lock<std::mutex> lk(inflight_mu);
+    inflight_cv.wait(lk, [&]() { return inflight == 0; });
   }
 
   manager_->SetStatusCallback({});
@@ -228,6 +290,7 @@ void Broker::HandleClient(HANDLE pipe) {
 
 int Broker::Run() {
   std::wstring pipe_name = BrokerPipeName(client_session_id_);
+  Log(std::wstring(L"Broker::Run pipe=") + pipe_name);
 
   // Build a SECURITY_ATTRIBUTES granting access to the launching user only.
   // Note: the broker runs as Administrator, but the *client* might be the
@@ -248,7 +311,8 @@ int Broker::Run() {
   for (;;) {
     HANDLE pipe = ::CreateNamedPipeW(
         pipe_name.c_str(),
-        PIPE_ACCESS_DUPLEX | FILE_FLAG_FIRST_PIPE_INSTANCE,
+        PIPE_ACCESS_DUPLEX | FILE_FLAG_FIRST_PIPE_INSTANCE |
+            FILE_FLAG_OVERLAPPED,
         PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT |
             PIPE_REJECT_REMOTE_CLIENTS,
         1, kPipeBuf, kPipeBuf, kIdleTimeoutMs, sec->sa());
@@ -257,16 +321,30 @@ int Broker::Run() {
       return 4;
     }
 
-    BOOL connected = ::ConnectNamedPipe(pipe, nullptr) ||
-                     ::GetLastError() == ERROR_PIPE_CONNECTED;
-    if (!connected) {
+    OVERLAPPED ov{};
+    ov.hEvent = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    BOOL connected = ::ConnectNamedPipe(pipe, &ov);
+    DWORD cerr = ::GetLastError();
+    if (!connected && cerr == ERROR_IO_PENDING) {
+      DWORD bytes = 0;
+      connected = ::GetOverlappedResult(pipe, &ov, &bytes, TRUE);
+      cerr = ::GetLastError();
+    }
+    ::CloseHandle(ov.hEvent);
+    if (!connected && cerr != ERROR_PIPE_CONNECTED) {
+      Log(ErrorWithCode("ConnectNamedPipe", cerr));
       ::CloseHandle(pipe);
       continue;
     }
+    Log("Broker: client connected, entering HandleClient");
     HandleClient(pipe);
     ::CloseHandle(pipe);
-    // Loop back and accept a fresh connection. Idle exit is handled by the
-    // pipe's own timeout / the parent process going away.
+    // Client disconnected. Exit so a future plugin instance starts a fresh
+    // broker (with a single UAC prompt) instead of inheriting state from a
+    // previous Flutter process. The pipe's idle timeout would eventually do
+    // the same thing, but only after kIdleTimeoutMs and only if no other
+    // client connects in the meantime.
+    return 0;
   }
 }
 

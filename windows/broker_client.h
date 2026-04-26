@@ -72,6 +72,8 @@ class BrokerClient {
   std::vector<uint8_t> Request(uint32_t op, const std::vector<uint8_t>& payload);
 
   std::mutex mu_;
+  std::mutex write_mu_;     // serializes WriteFile on pipe_
+  std::mutex connect_mu_;   // serializes EnsureConnected
   std::condition_variable cv_;
   HANDLE pipe_ = INVALID_HANDLE_VALUE;
   std::thread reader_;

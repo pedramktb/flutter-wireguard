@@ -17,8 +17,17 @@ namespace flutter_wireguard {
 namespace {
 
 constexpr wchar_t kServicePrefix[] = L"WireGuardTunnel$";
-// Best-effort timeout for SCM start/stop transitions (ms).
-constexpr DWORD kTransitionTimeoutMs = 15'000;
+// Best-effort timeout for SCM stop transitions (ms). We don't block the
+// caller waiting for *start* transitions — the status poller will report
+// state changes asynchronously via OnTunnelStatus events.
+constexpr DWORD kStopTimeoutMs = 5'000;
+// Max time to wait after DeleteService for SCM to drop the marked-for-delete
+// record before the next CreateService can succeed (ms).
+constexpr DWORD kDeletionPollMs = 3'000;
+// Min time to watch a freshly-started service so we can surface immediate
+// crashes synchronously instead of returning OK on a service that's already
+// dead. Anything past this returns success and the poller takes over.
+constexpr DWORD kStartWatchMs = 1'500;
 
 std::wstring ServiceName(const std::string& tunnel_name) {
   return std::wstring(kServicePrefix) + Utf8ToWide(tunnel_name);
@@ -86,23 +95,40 @@ uint8_t MapServiceState(DWORD scm_state) {
 
 void DeleteServiceIfExists(const std::wstring& service_name) {
   ScopedScm scm(SC_MANAGER_CONNECT);
-  ScopedService svc(::OpenServiceW(scm.get(), service_name.c_str(),
-                                   SERVICE_STOP | DELETE | SERVICE_QUERY_STATUS));
-  if (!svc) return;
-  DWORD state = QueryState(svc.get());
-  if (state == SERVICE_RUNNING || state == SERVICE_START_PENDING) {
-    SERVICE_STATUS s{};
-    ::ControlService(svc.get(), SERVICE_CONTROL_STOP, &s);
-    auto deadline =
-        std::chrono::steady_clock::now() +
-        std::chrono::milliseconds(kTransitionTimeoutMs);
-    while (std::chrono::steady_clock::now() < deadline) {
-      DWORD cur = QueryState(svc.get());
-      if (cur == SERVICE_STOPPED || cur == 0) break;
-      ::Sleep(200);
+  {
+    ScopedService svc(::OpenServiceW(
+        scm.get(), service_name.c_str(),
+        SERVICE_STOP | DELETE | SERVICE_QUERY_STATUS));
+    if (!svc) return;
+    DWORD state = QueryState(svc.get());
+    if (state == SERVICE_RUNNING || state == SERVICE_START_PENDING) {
+      SERVICE_STATUS s{};
+      ::ControlService(svc.get(), SERVICE_CONTROL_STOP, &s);
+      auto deadline = std::chrono::steady_clock::now() +
+                      std::chrono::milliseconds(kStopTimeoutMs);
+      while (std::chrono::steady_clock::now() < deadline) {
+        DWORD cur = QueryState(svc.get());
+        if (cur == SERVICE_STOPPED || cur == 0) break;
+        ::Sleep(100);
+      }
     }
+    ::DeleteService(svc.get());
   }
-  ::DeleteService(svc.get());
+  // After our handle closes, briefly poll until SCM removes the record
+  // (otherwise CreateService returns 1072 ERROR_SERVICE_MARKED_FOR_DELETE).
+  auto deadline = std::chrono::steady_clock::now() +
+                  std::chrono::milliseconds(kDeletionPollMs);
+  while (std::chrono::steady_clock::now() < deadline) {
+    SC_HANDLE probe =
+        ::OpenServiceW(scm.get(), service_name.c_str(), SERVICE_QUERY_STATUS);
+    if (probe == nullptr) {
+      DWORD err = ::GetLastError();
+      if (err == ERROR_SERVICE_DOES_NOT_EXIST) return;
+    } else {
+      ::CloseServiceHandle(probe);
+    }
+    ::Sleep(50);
+  }
 }
 
 }  // namespace
@@ -176,7 +202,7 @@ void TunnelManager::Start(const std::string& name, const std::string& config) {
   }
 
   auto deadline = std::chrono::steady_clock::now() +
-                  std::chrono::milliseconds(kTransitionTimeoutMs);
+                  std::chrono::milliseconds(kStartWatchMs);
   while (std::chrono::steady_clock::now() < deadline) {
     DWORD cur = QueryState(svc.get());
     if (cur == SERVICE_RUNNING) break;
@@ -193,8 +219,11 @@ void TunnelManager::Start(const std::string& name, const std::string& config) {
       throw std::runtime_error(
           ErrorWithCode("tunnel service exited during startup", exit_code));
     }
-    ::Sleep(200);
+    ::Sleep(100);
   }
+  // Past kStartWatchMs the service is still START_PENDING (driver install,
+  // DNS apply, etc). That's OK — the poller will surface RUNNING/STOPPED
+  // when it happens. Don't keep the broker thread blocked.
 
   std::lock_guard<std::mutex> lock(mu_);
   known_tunnels_.insert(name);

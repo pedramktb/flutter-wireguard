@@ -5,6 +5,17 @@ project(${PROJECT_NAME} LANGUAGES CXX)
 
 cmake_policy(VERSION 3.14...3.25)
 
+# When configured stand-alone (e.g. for `flutter_wireguard_test` outside a
+# Flutter build), the helper macro defined by the Flutter wrapper is missing.
+# Provide a no-op fallback so the rest of the file still parses; the plugin
+# DLL will still link against ::flutter, which only exists inside the Flutter
+# build, so building the plugin target stand-alone will fail at link time as
+# expected — but the test target stays usable.
+if(NOT COMMAND apply_standard_settings)
+  function(apply_standard_settings target)
+  endfunction()
+endif()
+
 set(PLUGIN_NAME "flutter_wireguard_plugin")
 set(HELPER_NAME "flutter_wireguard_helper")
 

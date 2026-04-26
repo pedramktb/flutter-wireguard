@@ -21,8 +21,10 @@
 
 #include "broker.h"
 #include "tunnel_service.h"
+#include "../utils.h"
 
 using flutter_wireguard::Broker;
+using flutter_wireguard::Log;
 using flutter_wireguard::RunTunnelService;
 
 namespace {

@@ -2,6 +2,7 @@
 
 #include <windows.h>
 
+#include <string>
 #include <vector>
 
 #include "../utils.h"
@@ -10,50 +11,66 @@ namespace flutter_wireguard {
 
 namespace {
 
-// We deliberately LoadLibrary tunnel.dll instead of linking against tunnel.lib
-// (no .lib is shipped with the embeddable Go DLL; cgo only emits the .h) and
-// to keep helper.exe runnable for unit tests on machines without the DLL.
+// Embeddable WireGuardTunnelService (from the Go embeddable-dll-service
+// package). When invoked it performs the full Windows-service lifecycle
+// itself \u2014 including StartServiceCtrlDispatcher \u2014 so callers must NOT
+// register a separate SCM dispatcher of their own.
+//
+// The exported symbol returns a Go bool, marshalled as a 1-byte cdecl value:
+//   nonzero = service ran to completion successfully
+//   zero    = startup failed (see %WINDIR%\Temp\flutter_wireguard.log)
 using WireGuardTunnelServiceFn = unsigned char(__cdecl*)(unsigned short*);
 
-std::wstring g_conf_path;
+std::wstring HelperDir() {
+  wchar_t buf[MAX_PATH];
+  DWORD n = ::GetModuleFileNameW(nullptr, buf, MAX_PATH);
+  if (n == 0 || n == MAX_PATH) return {};
+  std::wstring p(buf, n);
+  size_t slash = p.find_last_of(L"\\/");
+  if (slash == std::wstring::npos) return {};
+  return p.substr(0, slash);
+}
 
-void WINAPI ServiceMain(DWORD /*argc*/, LPWSTR* /*argv*/) {
-  HMODULE mod = ::LoadLibraryW(L"tunnel.dll");
+}  // namespace
+
+int RunTunnelService(const std::wstring& conf_path) {
+  Log(std::wstring(L"tunnel-service: RunTunnelService conf=") + conf_path);
+
+  // Services start with cwd = C:\Windows\System32. Make sure tunnel.dll
+  // and its sibling wireguard.dll resolve from where helper.exe lives.
+  std::wstring dir = HelperDir();
+  if (!dir.empty()) {
+    ::SetCurrentDirectoryW(dir.c_str());
+    ::SetDllDirectoryW(dir.c_str());
+  }
+
+  std::wstring tunnel_path =
+      dir.empty() ? L"tunnel.dll" : (dir + L"\\tunnel.dll");
+  HMODULE mod = ::LoadLibraryExW(
+      tunnel_path.c_str(), nullptr,
+      LOAD_LIBRARY_SEARCH_DEFAULT_DIRS | LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR);
   if (mod == nullptr) {
     Log(ErrorWithCode("LoadLibrary(tunnel.dll)", ::GetLastError()));
-    return;
+    return 5;
   }
   auto fn = reinterpret_cast<WireGuardTunnelServiceFn>(
       ::GetProcAddress(mod, "WireGuardTunnelService"));
   if (fn == nullptr) {
     Log(ErrorWithCode("GetProcAddress(WireGuardTunnelService)",
                       ::GetLastError()));
-    return;
+    return 6;
   }
-  std::vector<wchar_t> buf(g_conf_path.begin(), g_conf_path.end());
+
+  // WireGuardTunnelService internally calls StartServiceCtrlDispatcher and
+  // blocks until SCM stops the service. Do NOT wrap it in our own dispatcher
+  // \u2014 that would trigger ERROR_SERVICE_ALREADY_RUNNING on the inner call
+  // and the function returns false (=0) immediately.
+  std::vector<wchar_t> buf(conf_path.begin(), conf_path.end());
   buf.push_back(L'\0');
-  (void)fn(reinterpret_cast<unsigned short*>(buf.data()));
-}
-
-}  // namespace
-
-int RunTunnelService(const std::wstring& conf_path) {
-  g_conf_path = conf_path;
-
-  // The empty service-name buffer combined with SERVICE_WIN32_OWN_PROCESS
-  // tells SCM to use whatever name was passed to CreateService — that's our
-  // WireGuardTunnel$<name>.
-  wchar_t name_buf[1] = {L'\0'};
-  SERVICE_TABLE_ENTRYW table[] = {
-      {name_buf, ServiceMain},
-      {nullptr, nullptr},
-  };
-
-  if (!::StartServiceCtrlDispatcherW(table)) {
-    Log(ErrorWithCode("StartServiceCtrlDispatcher", ::GetLastError()));
-    return 5;
-  }
-  return 0;
+  unsigned char rc = fn(reinterpret_cast<unsigned short*>(buf.data()));
+  Log(std::string("tunnel-service: WireGuardTunnelService returned ") +
+      std::to_string(static_cast<int>(rc)));
+  return rc != 0 ? 0 : 7;
 }
 
 }  // namespace flutter_wireguard

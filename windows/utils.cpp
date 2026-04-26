@@ -2,9 +2,42 @@
 
 #include <windows.h>
 
+#include <mutex>
 #include <sstream>
 
 namespace flutter_wireguard {
+
+namespace {
+
+// Tee logs to %TEMP%\flutter_wireguard.log so they survive even when
+// OutputDebugString isn't being captured by a debugger.
+void AppendLogFile(const std::string& utf8) {
+  static std::mutex mu;
+  std::lock_guard<std::mutex> lock(mu);
+  wchar_t temp[MAX_PATH];
+  DWORD n = ::GetTempPathW(MAX_PATH, temp);
+  if (n == 0 || n >= MAX_PATH) return;
+  std::wstring path = std::wstring(temp, n) + L"flutter_wireguard.log";
+  HANDLE h = ::CreateFileW(path.c_str(), FILE_APPEND_DATA,
+                           FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                           nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (h == INVALID_HANDLE_VALUE) return;
+  SYSTEMTIME st;
+  ::GetLocalTime(&st);
+  char prefix[64];
+  int pn = std::snprintf(prefix, sizeof(prefix),
+                         "[%04u-%02u-%02u %02u:%02u:%02u.%03u pid=%lu] ",
+                         st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute,
+                         st.wSecond, st.wMilliseconds,
+                         ::GetCurrentProcessId());
+  DWORD wrote = 0;
+  if (pn > 0) ::WriteFile(h, prefix, pn, &wrote, nullptr);
+  ::WriteFile(h, utf8.data(), static_cast<DWORD>(utf8.size()), &wrote, nullptr);
+  ::WriteFile(h, "\n", 1, &wrote, nullptr);
+  ::CloseHandle(h);
+}
+
+}  // namespace
 
 std::string ErrorWithCode(const char* msg, unsigned long error_code) {
   std::ostringstream out;
@@ -54,11 +87,13 @@ std::wstring Utf8ToWide(const std::string& str) {
 void Log(const std::string& message) {
   std::string msg = message + "\n";
   ::OutputDebugStringA(msg.c_str());
+  AppendLogFile(message);
 }
 
 void Log(const std::wstring& message) {
   std::wstring msg = message + L"\n";
   ::OutputDebugStringW(msg.c_str());
+  AppendLogFile(WideToUtf8(message));
 }
 
 }  // namespace flutter_wireguard

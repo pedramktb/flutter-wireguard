@@ -1,5 +1,6 @@
 #include "pipe_security.h"
 
+#include <aclapi.h>
 #include <wtsapi32.h>
 
 #include <vector>
@@ -77,26 +78,16 @@ PipeSecurity::~PipeSecurity() {
   if (system_sid_ != nullptr) ::FreeSid(system_sid_);
 }
 
-PSID GetActiveConsoleUserSid() {
-  DWORD session_id = ::WTSGetActiveConsoleSessionId();
-  if (session_id == 0xFFFFFFFF) return nullptr;
-  HANDLE token = nullptr;
-  if (!::WTSQueryUserToken(session_id, &token)) {
-    Log(ErrorWithCode("WTSQueryUserToken", ::GetLastError()));
-    return nullptr;
-  }
+namespace {
+
+PSID DuplicateTokenUserSid(HANDLE token) {
   DWORD needed = 0;
   ::GetTokenInformation(token, TokenUser, nullptr, 0, &needed);
-  if (needed == 0) {
-    ::CloseHandle(token);
-    return nullptr;
-  }
+  if (needed == 0) return nullptr;
   std::vector<BYTE> buf(needed);
   if (!::GetTokenInformation(token, TokenUser, buf.data(), needed, &needed)) {
-    ::CloseHandle(token);
     return nullptr;
   }
-  ::CloseHandle(token);
   PSID src = reinterpret_cast<TOKEN_USER*>(buf.data())->User.Sid;
   DWORD sid_len = ::GetLengthSid(src);
   PSID copy = ::LocalAlloc(LPTR, sid_len);
@@ -104,6 +95,32 @@ PSID GetActiveConsoleUserSid() {
   if (!::CopySid(sid_len, copy, src)) {
     ::LocalFree(copy);
     return nullptr;
+  }
+  return copy;
+}
+
+}  // namespace
+
+PSID GetActiveConsoleUserSid() {
+  // The broker is launched via ShellExecuteEx("runas") so it runs as the
+  // *same* interactive user, just with an elevated (admin) token. We can
+  // therefore read our own process token to get the user's SID — no
+  // SeTcbPrivilege required.
+  //
+  // We intentionally do NOT call WTSQueryUserToken: that needs SeTcbPrivilege,
+  // which only LocalSystem has. Calling it from an elevated user process fails
+  // with ERROR_PRIVILEGE_NOT_HELD, the broker exits, and the client times out
+  // waiting for the pipe (manifesting as repeated UAC prompts on every
+  // refresh).
+  HANDLE token = nullptr;
+  if (!::OpenProcessToken(::GetCurrentProcess(), TOKEN_QUERY, &token)) {
+    Log(ErrorWithCode("OpenProcessToken", ::GetLastError()));
+    return nullptr;
+  }
+  PSID copy = DuplicateTokenUserSid(token);
+  ::CloseHandle(token);
+  if (copy == nullptr) {
+    Log("GetTokenInformation(TokenUser) failed");
   }
   return copy;
 }

@@ -11,6 +11,7 @@
 #include "../cpp/name_validator.h"
 #include "broker_client.h"
 #include "messages.g.h"
+#include "utils.h"
 
 namespace flutter_wireguard {
 

@@ -20,11 +20,39 @@ constexpr DWORD kConnectAttempts = 50;     // ~10 seconds total
 constexpr DWORD kConnectSleepMs = 200;
 constexpr DWORD kRequestTimeoutMs = 30'000;
 
+// MSVC's std::runtime_error(const std::string&) corrupts the stored what()
+// in our build (the internal buffer is freed before the catch sees it,
+// yielding 0xDD-fill output). Use a custom exception that owns its message
+// as a std::string member; what() returns its c_str() which lives as long
+// as the exception object itself.
+class BrokerError : public std::exception {
+ public:
+  explicit BrokerError(std::string msg) : msg_(std::move(msg)) {}
+  const char* what() const noexcept override { return msg_.c_str(); }
+
+ private:
+  std::string msg_;
+};
+
+void CheckOk(ipc_ns::Reader& r) {
+  if (r.U8() != ipc_ns::kStatusOk) {
+    throw BrokerError(r.Str());
+  }
+}
+
 bool ReadFully(HANDLE h, void* buf, DWORD len) {
   BYTE* p = static_cast<BYTE*>(buf);
   while (len > 0) {
     DWORD got = 0;
-    if (!::ReadFile(h, p, len, &got, nullptr) || got == 0) return false;
+    OVERLAPPED ov{};
+    ov.hEvent = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    if (ov.hEvent == nullptr) return false;
+    BOOL ok = ::ReadFile(h, p, len, &got, &ov);
+    if (!ok && ::GetLastError() == ERROR_IO_PENDING) {
+      ok = ::GetOverlappedResult(h, &ov, &got, TRUE);
+    }
+    ::CloseHandle(ov.hEvent);
+    if (!ok || got == 0) return false;
     p += got;
     len -= got;
   }
@@ -35,7 +63,15 @@ bool WriteFully(HANDLE h, const void* buf, DWORD len) {
   const BYTE* p = static_cast<const BYTE*>(buf);
   while (len > 0) {
     DWORD wrote = 0;
-    if (!::WriteFile(h, p, len, &wrote, nullptr) || wrote == 0) return false;
+    OVERLAPPED ov{};
+    ov.hEvent = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    if (ov.hEvent == nullptr) return false;
+    BOOL ok = ::WriteFile(h, p, len, &wrote, &ov);
+    if (!ok && ::GetLastError() == ERROR_IO_PENDING) {
+      ok = ::GetOverlappedResult(h, &ov, &wrote, TRUE);
+    }
+    ::CloseHandle(ov.hEvent);
+    if (!ok || wrote == 0) return false;
     p += wrote;
     len -= wrote;
   }
@@ -112,7 +148,8 @@ HANDLE BrokerClient::LaunchBrokerAndConnect() {
   // launch in the same session).
   for (DWORD i = 0; i < 5; ++i) {
     HANDLE h = ::CreateFileW(pipe_name.c_str(), GENERIC_READ | GENERIC_WRITE,
-                             0, nullptr, OPEN_EXISTING, 0, nullptr);
+                             0, nullptr, OPEN_EXISTING,
+                             FILE_FLAG_OVERLAPPED, nullptr);
     if (h != INVALID_HANDLE_VALUE) return h;
     if (::GetLastError() != ERROR_FILE_NOT_FOUND) break;
     ::Sleep(50);
@@ -128,7 +165,7 @@ HANDLE BrokerClient::LaunchBrokerAndConnect() {
   info.lpParameters = args.c_str();
   info.nShow = SW_HIDE;
   if (!::ShellExecuteExW(&info)) {
-    throw std::runtime_error(
+    throw BrokerError(
         ErrorWithCode("ShellExecuteEx(runas helper)", ::GetLastError()));
   }
   if (info.hProcess != nullptr) ::CloseHandle(info.hProcess);
@@ -136,11 +173,12 @@ HANDLE BrokerClient::LaunchBrokerAndConnect() {
   // Now poll for the pipe to appear.
   for (DWORD i = 0; i < kConnectAttempts; ++i) {
     HANDLE h = ::CreateFileW(pipe_name.c_str(), GENERIC_READ | GENERIC_WRITE,
-                             0, nullptr, OPEN_EXISTING, 0, nullptr);
+                             0, nullptr, OPEN_EXISTING,
+                             FILE_FLAG_OVERLAPPED, nullptr);
     if (h != INVALID_HANDLE_VALUE) return h;
     DWORD err = ::GetLastError();
     if (err != ERROR_FILE_NOT_FOUND && err != ERROR_PIPE_BUSY) {
-      throw std::runtime_error(ErrorWithCode("CreateFile(pipe)", err));
+      throw BrokerError(ErrorWithCode("CreateFile(pipe)", err));
     }
     ::Sleep(kConnectSleepMs);
   }
@@ -148,6 +186,7 @@ HANDLE BrokerClient::LaunchBrokerAndConnect() {
 }
 
 void BrokerClient::EnsureConnected() {
+  std::lock_guard<std::mutex> connect_lock(connect_mu_);
   if (pipe_ != INVALID_HANDLE_VALUE) return;
   HANDLE h = LaunchBrokerAndConnect();
   pipe_ = h;
@@ -160,7 +199,7 @@ void BrokerClient::EnsureConnected() {
   auto resp = Request(ipc_ns::kOpHello, w.Take());
   ipc_ns::Reader r(resp.data(), resp.size());
   if (r.U8() != ipc_ns::kStatusOk) {
-    throw std::runtime_error("broker refused hello: " + r.Str());
+    throw BrokerError("broker refused hello: " + r.Str());
   }
   uint32_t broker_v = r.U32();
   if (broker_v != ipc_ns::kProtocolVersion) {
@@ -247,10 +286,13 @@ std::vector<uint8_t> BrokerClient::Request(uint32_t op,
   }
   std::vector<uint8_t> frame =
       ipc_ns::BuildFrame(op, seq, ipc_ns::kFlagNone, payload);
-  if (!WriteFully(pipe_, frame.data(), static_cast<DWORD>(frame.size()))) {
-    std::lock_guard<std::mutex> lock(mu_);
-    inflight_.erase(seq);
-    throw std::runtime_error("failed to write to broker pipe");
+  {
+    std::lock_guard<std::mutex> wlock(write_mu_);
+    if (!WriteFully(pipe_, frame.data(), static_cast<DWORD>(frame.size()))) {
+      std::lock_guard<std::mutex> lock(mu_);
+      inflight_.erase(seq);
+      throw std::runtime_error("failed to write to broker pipe");
+    }
   }
 
   std::unique_lock<std::mutex> lock(mu_);
@@ -260,20 +302,10 @@ std::vector<uint8_t> BrokerClient::Request(uint32_t op,
     throw std::runtime_error("broker request timed out");
   }
   if (!pending->error.empty()) {
-    throw std::runtime_error(pending->error);
+    throw BrokerError(pending->error);
   }
   return pending->payload;
 }
-
-namespace {
-
-void CheckOk(ipc_ns::Reader& r) {
-  if (r.U8() != ipc_ns::kStatusOk) {
-    throw std::runtime_error(r.Str());
-  }
-}
-
-}  // namespace
 
 void BrokerClient::Start(const std::string& name, const std::string& config) {
   EnsureConnected();
