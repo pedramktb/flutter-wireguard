@@ -6,6 +6,7 @@
 library flutter_wireguard.keys;
 
 import 'dart:convert';
+import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:cryptography/cryptography.dart';
@@ -53,8 +54,10 @@ Future<String> publicKeyFromPrivate(String privateKeyBase64) async {
 
 /// Generate a fresh 32-byte preshared key (matches `wg genpsk`).
 String generatePresharedKey() {
-  final secretBox = SecretKeyData.random(length: 32);
-  // ignore: invalid_use_of_protected_member
-  final bytes = secretBox.bytes;
-  return base64Encode(Uint8List.fromList(bytes));
+  final rng = Random.secure();
+  final bytes = Uint8List(32);
+  for (var i = 0; i < bytes.length; i++) {
+    bytes[i] = rng.nextInt(256);
+  }
+  return base64Encode(bytes);
 }

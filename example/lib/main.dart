@@ -297,7 +297,7 @@ class _BackendBanner extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: color.withOpacity(0.15),
+        color: color.withValues(alpha: 0.15),
         border: Border.all(color: color),
         borderRadius: BorderRadius.circular(8),
       ),

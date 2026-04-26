@@ -29,8 +29,8 @@ import 'package:flutter_wireguard/flutter_wireguard.dart' as wg;
 
 ```dart
 await wg.start(
-  name: 'wg0',
-  config: '''
+  'wg0',
+  '''
 [Interface]
 PrivateKey = <your-private-key>
 Address = 10.0.0.2/32
@@ -43,13 +43,13 @@ AllowedIPs = 0.0.0.0/0
 ''',
 );
 
-await wg.stop(name: 'wg0');
+await wg.stop('wg0');
 ```
 
 ### Query / stream tunnel status
 
 ```dart
-final TunnelStatus s = await wg.status(name: 'wg0');
+final TunnelStatus s = await wg.status('wg0');
 print('${s.name} ${s.state} rx=${s.rx} tx=${s.tx} hs=${s.handshake}');
 
 wg.statusStream().listen((TunnelStatus s) {

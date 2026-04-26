@@ -9,6 +9,7 @@
 #include <memory>
 #include <thread>
 #include <utility>
+#include <vector>
 
 #include "messages.g.h"
 #include "process_runner.h"
@@ -25,6 +26,10 @@ struct _FlutterWireguardPlugin {
   fwg::WgBackend* backend;                            // owned (raw)
   FlutterWireguardWireguardFlutterApi* flutter_api;   // owned via g_object
   guint poll_timer_id;
+  // Set while a background status poll is running; the GLib timer skips
+  // the tick instead of queueing another worker, so a slow pkexec call
+  // can't cause unbounded thread growth.
+  bool poll_in_flight;
 };
 
 G_DEFINE_TYPE(FlutterWireguardPlugin, flutter_wireguard_plugin, g_object_get_type())
@@ -217,24 +222,54 @@ const FlutterWireguardWireguardHostApiVTable kVTable = {
     /*backend=*/HandleBackend,
 };
 
-// One-second status poller. Runs on the GLib main loop.
+// One-second status poller. The GLib timer fires on the main loop, but the
+// actual `Status()` calls reach into PrivilegedSession (blocking I/O on the
+// pkexec pipe) so we hand the work to a worker thread and post the per-tunnel
+// updates back via g_idle_add. A simple in-flight flag prevents queueing.
+struct StatusPollContext {
+  FlutterWireguardPlugin* plugin;
+  std::vector<std::pair<std::string, fwg::TunnelStatusCpp>> results;
+};
+
+gboolean StatusPollDispatch(gpointer user_data) {
+  std::unique_ptr<StatusPollContext> ctx(
+      static_cast<StatusPollContext*>(user_data));
+  auto* self = ctx->plugin;
+  if (self->flutter_api != nullptr) {
+    for (auto& [_, s] : ctx->results) {
+      FlutterWireguardTunnelStatus* status = ToPigeonStatus(s);
+      flutter_wireguard_wireguard_flutter_api_on_tunnel_status(
+          self->flutter_api, status, nullptr, nullptr, nullptr);
+      g_object_unref(status);
+    }
+  }
+  self->poll_in_flight = false;
+  g_object_unref(self);
+  return G_SOURCE_REMOVE;
+}
+
 gboolean StatusPollCallback(gpointer user_data) {
   auto* self = FLUTTER_WIREGUARD_PLUGIN(user_data);
   if (self->backend == nullptr || self->flutter_api == nullptr) {
     return G_SOURCE_CONTINUE;
   }
-  for (const auto& name : self->backend->TunnelNames()) {
-    fwg::TunnelStatusCpp s;
-    try {
-      s = self->backend->Status(name);
-    } catch (...) {
-      continue;
-    }
-    FlutterWireguardTunnelStatus* status = ToPigeonStatus(s);
-    flutter_wireguard_wireguard_flutter_api_on_tunnel_status(
-        self->flutter_api, status, nullptr, nullptr, nullptr);
-    g_object_unref(status);
+  if (self->poll_in_flight) {
+    // Previous tick still talking to pkexec; don't pile up.
+    return G_SOURCE_CONTINUE;
   }
+  self->poll_in_flight = true;
+  g_object_ref(self);
+  std::thread([self] {
+    auto* ctx = new StatusPollContext{self, {}};
+    for (const auto& name : self->backend->TunnelNames()) {
+      try {
+        ctx->results.emplace_back(name, self->backend->Status(name));
+      } catch (...) {
+        // skip this tunnel
+      }
+    }
+    g_idle_add(StatusPollDispatch, ctx);
+  }).detach();
   return G_SOURCE_CONTINUE;
 }
 
@@ -260,6 +295,7 @@ static void flutter_wireguard_plugin_init(FlutterWireguardPlugin* self) {
   self->backend = nullptr;
   self->flutter_api = nullptr;
   self->poll_timer_id = 0;
+  self->poll_in_flight = false;
 }
 
 void flutter_wireguard_plugin_register_with_registrar(FlPluginRegistrar* registrar) {

@@ -76,8 +76,9 @@ class WgBackend {
   static bool IsValidName(const std::string& name);
 
   // Parses `wg show <name> dump` output into a TunnelStatusCpp aggregating rx,
-  // tx and the latest handshake across all peers. Returns kUp if any peers are
-  // listed (i.e. the dump succeeded), kDown otherwise.
+  // tx and the latest handshake across all peers. Returns kUp whenever the
+  // dump is non-empty (the interface exists, even with zero peers configured)
+  // and kDown for an empty stdout.
   static TunnelStatusCpp ParseWgShowDump(const std::string& name,
                                          const std::string& dump_stdout);
 

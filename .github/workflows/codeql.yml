@@ -45,14 +45,18 @@ jobs:
         include:
         - language: actions
           build-mode: none
+        # The Linux + Windows plugin C/C++ has no standalone build (it lives
+        # inside Flutter's CMake wrapper which provides apply_standard_settings).
+        # Use buildless extraction; CodeQL's tooling can still parse our headers.
         - language: c-cpp
-          build-mode: autobuild
+          build-mode: none
+        # CodeQL's Java/Kotlin autobuilder cannot configure a Flutter Android
+        # plugin (no Android SDK + no Flutter engine on the runner). Buildless
+        # extraction still gives security findings on .kt sources.
         - language: java-kotlin
-          build-mode: autobuild
-        - language: ruby
           build-mode: none
         - language: swift
-          build-mode: autobuild
+          build-mode: none
         # CodeQL supports the following values keywords for 'language': 'actions', 'c-cpp', 'csharp', 'go', 'java-kotlin', 'javascript-typescript', 'python', 'ruby', 'rust', 'swift'
         # Use `c-cpp` to analyze code written in C, C++ or both
         # Use 'java-kotlin' to analyze code written in Java, Kotlin or both

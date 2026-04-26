@@ -140,6 +140,7 @@ class FlutterWireguardPlugin :
     // ---- WireguardHostApi (Pigeon) ------------------------------------
 
     private inline fun <T> withService(
+        errorCode: String,
         crossinline callback: (Result<T>) -> Unit,
         crossinline block: (IWireguard) -> T,
     ) {
@@ -153,19 +154,19 @@ class FlutterWireguardPlugin :
                 val r = block(svc)
                 mainHandler.post { callback(Result.success(r)) }
             } catch (e: Exception) {
-                mainHandler.post { callback(Result.failure(FlutterError("BACKEND_FAILED", e.message ?: e.javaClass.simpleName))) }
+                mainHandler.post { callback(Result.failure(FlutterError(errorCode, e.message ?: e.javaClass.simpleName))) }
             }
         }
     }
 
     override fun start(name: String, config: String, callback: (Result<Unit>) -> Unit) =
-        withService(callback) { it.start(name, config) }
+        withService("START_FAILED", callback) { it.start(name, config) }
 
     override fun stop(name: String, callback: (Result<Unit>) -> Unit) =
-        withService(callback) { it.stop(name) }
+        withService("STOP_FAILED", callback) { it.stop(name) }
 
     override fun status(name: String, callback: (Result<TunnelStatus>) -> Unit) =
-        withService(callback) {
+        withService("STATUS_FAILED", callback) {
             val o = JSONObject(it.statusJson(name))
             TunnelStatus(
                 name = o.getString("name"),
@@ -177,10 +178,10 @@ class FlutterWireguardPlugin :
         }
 
     override fun tunnelNames(callback: (Result<List<String>>) -> Unit) =
-        withService(callback) { it.tunnelNames().toList() }
+        withService("TUNNELS_FAILED", callback) { it.tunnelNames().toList() }
 
     override fun backend(callback: (Result<BackendInfo>) -> Unit) =
-        withService(callback) {
+        withService("BACKEND_FAILED", callback) {
             val o = JSONObject(it.backendJson())
             BackendInfo(kind = o.getString("kind").toPigeonBackend(), detail = o.getString("detail"))
         }

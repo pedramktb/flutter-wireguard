@@ -11,7 +11,7 @@ import 'package:flutter_wireguard/src/messages.g.dart';
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   final messenger = TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
-  final codec = WireguardHostApi.pigeonChannelCodec;
+  const codec = WireguardHostApi.pigeonChannelCodec;
 
   void mockHost(String method, Object? Function(List<Object?> args) handler) {
     final channel = 'dev.flutter.pigeon.flutter_wireguard.WireguardHostApi.$method';
@@ -92,7 +92,7 @@ void main() {
 
     test('platform errors propagate', () async {
       messenger.setMockDecodedMessageHandler<Object?>(
-        BasicMessageChannel<Object?>(
+        const BasicMessageChannel<Object?>(
             'dev.flutter.pigeon.flutter_wireguard.WireguardHostApi.start', codec),
         (Object? _) async => <Object?>['START_FAILED', 'boom', null],
       );
@@ -115,7 +115,7 @@ void main() {
       // Synthesise an event by encoding a Pigeon message and sending it on
       // the FlutterApi channel.
       const channel = 'dev.flutter.pigeon.flutter_wireguard.WireguardFlutterApi.onTunnelStatus';
-      final flutterCodec = WireguardFlutterApi.pigeonChannelCodec;
+      const flutterCodec = WireguardFlutterApi.pigeonChannelCodec;
       final payload = flutterCodec.encodeMessage(<Object?>[
         TunnelStatus(
           name: 'wg0', state: TunnelState.up, rx: 1, tx: 2, handshake: 3),

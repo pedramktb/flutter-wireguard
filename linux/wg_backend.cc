@@ -132,14 +132,39 @@ WgBackend::WgBackend(std::unique_ptr<ProcessRunner> runner,
   if (config_dir_.empty()) {
     // Per-user runtime directory (XDG_RUNTIME_DIR is rwx by uid only).
     const char* xdg = std::getenv("XDG_RUNTIME_DIR");
-    std::filesystem::path base = (xdg != nullptr && *xdg != '\0')
-        ? std::filesystem::path(xdg)
-        : std::filesystem::path("/tmp");
-    config_dir_ = (base / "flutter_wireguard").string();
+    std::filesystem::path base;
+    if (xdg != nullptr && *xdg != '\0') {
+      base = std::filesystem::path(xdg) / "flutter_wireguard";
+    } else {
+      // Fallback: namespace by euid so distinct users on a shared system
+      // cannot collide / clobber each other's configs in /tmp.
+      base = std::filesystem::path("/tmp") /
+             ("flutter_wireguard-" + std::to_string(geteuid()));
+    }
+    config_dir_ = base.string();
   }
   std::error_code ec;
   std::filesystem::create_directories(config_dir_, ec);
-  ::chmod(config_dir_.c_str(), 0700);
+  if (ec) {
+    throw std::runtime_error("failed to create config dir " + config_dir_ +
+                             ": " + ec.message());
+  }
+  if (::chmod(config_dir_.c_str(), 0700) != 0) {
+    throw std::runtime_error("failed to chmod 0700 " + config_dir_ + ": " +
+                             std::strerror(errno));
+  }
+  // Refuse to use the dir if it is not owned by us or is group/world accessible
+  // (mitigates symlink attacks when falling back to /tmp).
+  struct stat st {};
+  if (::lstat(config_dir_.c_str(), &st) != 0) {
+    throw std::runtime_error("failed to stat " + config_dir_ + ": " +
+                             std::strerror(errno));
+  }
+  if (!S_ISDIR(st.st_mode) || st.st_uid != geteuid() ||
+      (st.st_mode & (S_IRWXG | S_IRWXO)) != 0) {
+    throw std::runtime_error("refusing to use insecure config dir " +
+                             config_dir_);
+  }
 
   is_root_ = (geteuid() == 0);
   DetectBackend();
