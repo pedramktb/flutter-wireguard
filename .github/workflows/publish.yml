@@ -8,10 +8,14 @@
 #   3. pub.dev will then trust OIDC tokens from this workflow.
 #
 # Release flow:
-#   - Bump `version:` in pubspec.yaml, update CHANGELOG.md, merge to main.
-#   - `git tag v1.2.3 && git push origin v1.2.3`
-#   - This workflow runs `dart pub publish` using the OIDC token; no
-#     long-lived credentials are stored in the repo.
+#   - Bump `version:` in pubspec.yaml, push to main.
+#   - Create a GitHub Release for tag vX.Y.Z (e.g.
+#     `gh release create vX.Y.Z --generate-notes`). Pushing the tag
+#     triggers this workflow.
+#   - The workflow generates CHANGELOG.md from the GitHub Releases
+#     (pub.dev requires the file to ship in the published archive)
+#     and then runs `dart pub publish` using OIDC -- no long-lived
+#     PUB_DEV_PUBLISH_TOKEN secret is needed.
 #
 # Reference: https://dart.dev/tools/pub/automated-publishing
 name: Publish to pub.dev
@@ -21,8 +25,67 @@ on:
     tags:
       - 'v[0-9]+.[0-9]+.[0-9]+*'
 
+permissions:
+  contents: read
+
 jobs:
   publish:
+    runs-on: ubuntu-latest
     permissions:
-      id-token: write # Required for authentication using OIDC
-    uses: dart-lang/setup-dart/.github/workflows/publish.yml@v1
+      id-token: write   # OIDC token for pub.dev
+      contents: read    # checkout
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Generate CHANGELOG.md from GitHub Releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          # Render every published (non-draft) GitHub Release, newest first,
+          # as a Keep-a-Changelog-style markdown file. If the current tag
+          # has no Release yet, fall back to auto-generated notes so pub.dev
+          # still sees a CHANGELOG entry for the version being published.
+          {
+            echo "# Changelog"
+            echo
+            had_current=0
+            while IFS=$'\t' read -r tag _name body published; do
+              [ -z "$tag" ] && continue
+              v="${tag#v}"
+              echo "## $v - ${published%T*}"
+              echo
+              if [ -n "$body" ] && [ "$body" != "null" ]; then
+                printf '%s\n\n' "$body"
+              else
+                echo "_No release notes._"
+                echo
+              fi
+              [ "$tag" = "$TAG" ] && had_current=1
+            done < <(gh release list --limit 100 \
+                       --json tagName,name,body,publishedAt,isDraft \
+                       --jq '.[] | select(.isDraft|not)
+                             | [.tagName, .name, .body, .publishedAt]
+                             | @tsv')
+            if [ "$had_current" = "0" ]; then
+              echo "## $version - $(date -u +%Y-%m-%d)"
+              echo
+              gh api -X POST \
+                "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
+                -f tag_name="$TAG" \
+                --jq '.body' || echo "_Released $TAG_"
+              echo
+            fi
+          } > CHANGELOG.md
+          echo "----- generated CHANGELOG.md -----"
+          head -40 CHANGELOG.md
+
+      - uses: dart-lang/setup-dart@v1
+
+      - name: Install dependencies
+        run: dart pub get
+
+      - name: Publish
+        run: dart pub publish --force
