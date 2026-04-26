@@ -50,13 +50,13 @@ jobs:
         # Use buildless extraction; CodeQL's tooling can still parse our headers.
         - language: c-cpp
           build-mode: none
-        # CodeQL's Java/Kotlin autobuilder cannot configure a Flutter Android
-        # plugin (no Android SDK + no Flutter engine on the runner). Buildless
-        # extraction still gives security findings on .kt sources.
-        - language: java-kotlin
-          build-mode: none
-        - language: swift
-          build-mode: none
+        # NOTE: java-kotlin and swift are intentionally omitted.
+        # - CodeQL's build-mode:none does NOT support Kotlin (the extractor
+        #   requires compiled sources), and autobuild can't configure a Flutter
+        #   Android plugin without the Flutter SDK + Android SDK on the runner.
+        # - The Swift file is a one-line stub registrar; no analysis value.
+        # If we ever ship real Swift / build the Android module here, switch
+        # back to manual build steps that invoke `flutter build apk`.
         # CodeQL supports the following values keywords for 'language': 'actions', 'c-cpp', 'csharp', 'go', 'java-kotlin', 'javascript-typescript', 'python', 'ruby', 'rust', 'swift'
         # Use `c-cpp` to analyze code written in C, C++ or both
         # Use 'java-kotlin' to analyze code written in Java, Kotlin or both
