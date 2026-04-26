@@ -81,10 +81,13 @@ jobs:
           echo "----- generated CHANGELOG.md -----"
           head -40 CHANGELOG.md
 
-      - uses: dart-lang/setup-dart@v1
+      - uses: dart-lang/setup-dart@v1   # provides OIDC PUB_TOKEN for publishing
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
 
       - name: Install dependencies
-        run: dart pub get
+        run: flutter pub get
 
       - name: Publish
-        run: dart pub publish --force
+        run: flutter pub publish --force
