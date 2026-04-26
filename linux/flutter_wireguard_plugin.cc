@@ -1,318 +1,289 @@
+// Linux plugin glue. Bridges Pigeon-generated GObject HostApi vtable to the
+// pure-C++ WgBackend, and pushes status events back to Dart via the
+// FlutterApi proxy.
 #include "include/flutter_wireguard/flutter_wireguard_plugin.h"
 
 #include <flutter_linux/flutter_linux.h>
 #include <gtk/gtk.h>
-#include <sys/utsname.h>
 
-#include <cstring>
-#include <iostream>
-#include <fstream>
-#include <sstream>
-#include <map>
 #include <memory>
-#include <chrono>
+#include <thread>
+#include <utility>
+#include <vector>
 
-#include "flutter_wireguard_plugin_private.h"
+#include "messages.g.h"
+#include "process_runner.h"
+#include "wg_backend.h"
 
-#define FLUTTER_WIREGUARD_PLUGIN(obj) \
-  (G_TYPE_CHECK_INSTANCE_CAST((obj), flutter_wireguard_plugin_get_type(), \
+#define FLUTTER_WIREGUARD_PLUGIN(obj)                                        \
+  (G_TYPE_CHECK_INSTANCE_CAST((obj), flutter_wireguard_plugin_get_type(),    \
                               FlutterWireguardPlugin))
+
+namespace fwg = flutter_wireguard;
 
 struct _FlutterWireguardPlugin {
   GObject parent_instance;
-  FlEventChannel* event_channel;
-  gchar* tunnel_name;
-  guint timer_id;
+  fwg::WgBackend* backend;                            // owned (raw)
+  FlutterWireguardWireguardFlutterApi* flutter_api;   // owned via g_object
+  guint poll_timer_id;
+  // Set while a background status poll is running; the GLib timer skips
+  // the tick instead of queueing another worker, so a slow pkexec call
+  // can't cause unbounded thread growth.
+  bool poll_in_flight;
 };
 
 G_DEFINE_TYPE(FlutterWireguardPlugin, flutter_wireguard_plugin, g_object_get_type())
 
-// Helper function to execute shell commands
-static std::string exec_command(const char* cmd) {
-  std::array<char, 128> buffer;
-  std::string result;
-  std::unique_ptr<FILE, decltype(&pclose)> pipe(popen(cmd, "r"), pclose);
-  if (!pipe) {
-    return "";
+namespace {
+
+FlutterWireguardTunnelState ToPigeonState(fwg::TunnelStateCpp s) {
+  switch (s) {
+    case fwg::TunnelStateCpp::kUp:     return FLUTTER_WIREGUARD_TUNNEL_STATE_UP;
+    case fwg::TunnelStateCpp::kDown:   return FLUTTER_WIREGUARD_TUNNEL_STATE_DOWN;
+    case fwg::TunnelStateCpp::kToggle: return FLUTTER_WIREGUARD_TUNNEL_STATE_TOGGLE;
   }
-  while (fgets(buffer.data(), buffer.size(), pipe.get()) != nullptr) {
-    result += buffer.data();
-  }
-  return result;
+  return FLUTTER_WIREGUARD_TUNNEL_STATE_DOWN;
 }
 
-// Helper function to write config file
-static bool write_config_file(const gchar* name, const gchar* config) {
-  std::string config_path = "/etc/wireguard/";
-  config_path += name;
-  config_path += ".conf";
-  
-  std::ofstream config_file(config_path);
-  if (!config_file.is_open()) {
-    return false;
+FlutterWireguardBackendKind ToPigeonBackend(fwg::BackendKindCpp k) {
+  switch (k) {
+    case fwg::BackendKindCpp::kKernel:    return FLUTTER_WIREGUARD_BACKEND_KIND_KERNEL;
+    case fwg::BackendKindCpp::kUserspace: return FLUTTER_WIREGUARD_BACKEND_KIND_USERSPACE;
+    case fwg::BackendKindCpp::kUnknown:   return FLUTTER_WIREGUARD_BACKEND_KIND_UNKNOWN;
   }
-  
-  config_file << config;
-  config_file.close();
-  
-  // Set permissions to 600
-  std::string chmod_cmd = "chmod 600 " + config_path;
-  system(chmod_cmd.c_str());
-  
-  return true;
+  return FLUTTER_WIREGUARD_BACKEND_KIND_UNKNOWN;
 }
 
-// Helper function to get handshake timestamp in milliseconds
-static int64_t get_handshake_timestamp(const gchar* name) {
-  std::string cmd = "wg show ";
-  cmd += name;
-  cmd += " latest-handshakes 2>/dev/null";
-  
-  std::string output = exec_command(cmd.c_str());
-  
-  if (output.empty()) {
-    return 0;
-  }
-  
-  // Parse the output - format: <public_key>\t<timestamp_seconds>
-  size_t tab_pos = output.find('\t');
-  if (tab_pos == std::string::npos) {
-    return 0;
-  }
-  
-  std::string timestamp_str = output.substr(tab_pos + 1);
-  try {
-    int64_t timestamp_sec = std::stoll(timestamp_str);
-    // Convert to milliseconds
-    return timestamp_sec * 1000;
-  } catch (...) {
-    return 0;
-  }
+FlutterWireguardTunnelStatus* ToPigeonStatus(const fwg::TunnelStatusCpp& s) {
+  return flutter_wireguard_tunnel_status_new(
+      s.name.c_str(), ToPigeonState(s.state), s.rx, s.tx, s.handshake);
 }
 
-// Helper function to get transfer statistics
-static void get_transfer_stats(const gchar* name, int64_t* rx, int64_t* tx) {
-  std::string cmd = "wg show ";
-  cmd += name;
-  cmd += " transfer 2>/dev/null";
-  
-  std::string output = exec_command(cmd.c_str());
-  
-  if (output.empty()) {
-    *rx = 0;
-    *tx = 0;
-    return;
+// ---- Async dispatch helpers ----------------------------------------------
+//
+// HostApi vtable callbacks fire on the GLib main thread. Any blocking work
+// (subprocess invocations) must move to a worker thread. We use a small struct
+// per call to capture inputs+outputs and bounce the response back via
+// g_idle_add so we touch FlBinaryMessenger only from the main thread.
+
+struct StartCtx {
+  FlutterWireguardPlugin* plugin;
+  FlutterWireguardWireguardHostApiResponseHandle* handle;
+  std::string name;
+  std::string config;
+  std::string error;
+  bool ok = false;
+};
+
+gboolean StartReply(gpointer data) {
+  auto* c = static_cast<StartCtx*>(data);
+  if (c->ok) {
+    flutter_wireguard_wireguard_host_api_respond_start(c->handle);
+  } else {
+    flutter_wireguard_wireguard_host_api_respond_error_start(
+        c->handle, "START_FAILED", c->error.c_str(), nullptr);
   }
-  
-  // Parse the output - format: <public_key>\t<rx_bytes>\t<tx_bytes>
-  std::istringstream iss(output);
-  std::string public_key, rx_str, tx_str;
-  
-  if (std::getline(iss, public_key, '\t') &&
-      std::getline(iss, rx_str, '\t') &&
-      std::getline(iss, tx_str)) {
+  g_object_unref(c->handle);
+  g_object_unref(c->plugin);
+  delete c;
+  return G_SOURCE_REMOVE;
+}
+
+void HandleStart(const gchar* name, const gchar* config,
+                 FlutterWireguardWireguardHostApiResponseHandle* handle,
+                 gpointer user_data) {
+  auto* plugin = FLUTTER_WIREGUARD_PLUGIN(user_data);
+  g_object_ref(plugin);
+  g_object_ref(handle);
+  auto* ctx = new StartCtx{plugin, handle, name, config, "", false};
+  std::thread([ctx]() {
     try {
-      *rx = std::stoll(rx_str);
-      *tx = std::stoll(tx_str);
-    } catch (...) {
-      *rx = 0;
-      *tx = 0;
+      ctx->plugin->backend->Start(ctx->name, ctx->config);
+      ctx->ok = true;
+    } catch (const std::exception& e) {
+      ctx->error = e.what();
+      ctx->ok = false;
     }
+    g_idle_add(StartReply, ctx);
+  }).detach();
+}
+
+struct StopCtx {
+  FlutterWireguardPlugin* plugin;
+  FlutterWireguardWireguardHostApiResponseHandle* handle;
+  std::string name;
+  std::string error;
+  bool ok = false;
+};
+
+gboolean StopReply(gpointer data) {
+  auto* c = static_cast<StopCtx*>(data);
+  if (c->ok) {
+    flutter_wireguard_wireguard_host_api_respond_stop(c->handle);
   } else {
-    *rx = 0;
-    *tx = 0;
+    flutter_wireguard_wireguard_host_api_respond_error_stop(
+        c->handle, "STOP_FAILED", c->error.c_str(), nullptr);
   }
+  g_object_unref(c->handle);
+  g_object_unref(c->plugin);
+  delete c;
+  return G_SOURCE_REMOVE;
 }
 
-// Helper function to check if interface exists and is up
-static bool is_interface_up(const gchar* name) {
-  std::string cmd = "ip link show ";
-  cmd += name;
-  cmd += " 2>/dev/null | grep -q 'state UP'";
-  
-  int result = system(cmd.c_str());
-  return result == 0;
+void HandleStop(const gchar* name,
+                FlutterWireguardWireguardHostApiResponseHandle* handle,
+                gpointer user_data) {
+  auto* plugin = FLUTTER_WIREGUARD_PLUGIN(user_data);
+  g_object_ref(plugin);
+  g_object_ref(handle);
+  auto* ctx = new StopCtx{plugin, handle, name, "", false};
+  std::thread([ctx]() {
+    try {
+      ctx->plugin->backend->Stop(ctx->name);
+      ctx->ok = true;
+    } catch (const std::exception& e) {
+      ctx->error = e.what();
+      ctx->ok = false;
+    }
+    g_idle_add(StopReply, ctx);
+  }).detach();
 }
 
-// Called when a method call is received from Flutter.
-static void flutter_wireguard_plugin_handle_method_call(
-    FlutterWireguardPlugin* self,
-    FlMethodCall* method_call) {
-  g_autoptr(FlMethodResponse) response = nullptr;
+struct StatusCtx {
+  FlutterWireguardPlugin* plugin;
+  FlutterWireguardWireguardHostApiResponseHandle* handle;
+  std::string name;
+  fwg::TunnelStatusCpp result;
+  std::string error;
+  bool ok = false;
+};
 
-  const gchar* method = fl_method_call_get_name(method_call);
-
-  if (strcmp(method, "start") == 0) {
-    FlValue* args = fl_method_call_get_args(method_call);
-    FlValue* name_value = fl_value_lookup_string(args, "name");
-    FlValue* config_value = fl_value_lookup_string(args, "config");
-    
-    if (name_value == nullptr || config_value == nullptr) {
-      response = FL_METHOD_RESPONSE(fl_method_error_response_new(
-          "INVALID_ARGS", "Missing name or config argument", nullptr));
-    } else {
-      const gchar* name = fl_value_get_string(name_value);
-      const gchar* config = fl_value_get_string(config_value);
-      
-      // Store tunnel name
-      if (self->tunnel_name) {
-        g_free(self->tunnel_name);
-      }
-      self->tunnel_name = g_strdup(name);
-      
-      // Write config file
-      if (!write_config_file(name, config)) {
-        response = FL_METHOD_RESPONSE(fl_method_error_response_new(
-            "CONFIG_ERROR", "Failed to write config file", nullptr));
-      } else {
-        // Start WireGuard interface
-        std::string start_cmd = "wg-quick up ";
-        start_cmd += name;
-        start_cmd += " 2>&1";
-        
-        std::string result = exec_command(start_cmd.c_str());
-        
-        if (is_interface_up(name)) {
-          response = FL_METHOD_RESPONSE(fl_method_success_response_new(nullptr));
-        } else {
-          g_autofree gchar* error_msg = g_strdup_printf("Failed to start tunnel: %s", result.c_str());
-          response = FL_METHOD_RESPONSE(fl_method_error_response_new(
-              "START_ERROR", error_msg, nullptr));
-        }
-      }
-    }
-  } else if (strcmp(method, "stop") == 0) {
-    FlValue* args = fl_method_call_get_args(method_call);
-    FlValue* name_value = fl_value_lookup_string(args, "name");
-    
-    if (name_value == nullptr) {
-      response = FL_METHOD_RESPONSE(fl_method_error_response_new(
-          "INVALID_ARGS", "Missing name argument", nullptr));
-    } else {
-      const gchar* name = fl_value_get_string(name_value);
-      
-      // Stop WireGuard interface
-      std::string stop_cmd = "wg-quick down ";
-      stop_cmd += name;
-      stop_cmd += " 2>&1";
-      
-      exec_command(stop_cmd.c_str());
-      response = FL_METHOD_RESPONSE(fl_method_success_response_new(nullptr));
-    }
-  } else if (strcmp(method, "status") == 0) {
-    FlValue* args = fl_method_call_get_args(method_call);
-    FlValue* name_value = fl_value_lookup_string(args, "name");
-    
-    if (name_value == nullptr) {
-      response = FL_METHOD_RESPONSE(fl_method_error_response_new(
-          "INVALID_ARGS", "Missing name argument", nullptr));
-    } else {
-      const gchar* name = fl_value_get_string(name_value);
-      
-      bool is_up = is_interface_up(name);
-      int64_t rx = 0, tx = 0;
-      int64_t handshake = get_handshake_timestamp(name);
-      
-      if (is_up) {
-        get_transfer_stats(name, &rx, &tx);
-      }
-      
-      g_autoptr(FlValue) result_map = fl_value_new_map();
-      fl_value_set_string_take(result_map, "name", fl_value_new_string(name));
-      fl_value_set_string_take(result_map, "state", fl_value_new_string(is_up ? "UP" : "DOWN"));
-      fl_value_set_string_take(result_map, "rx", fl_value_new_int(rx));
-      fl_value_set_string_take(result_map, "tx", fl_value_new_int(tx));
-      fl_value_set_string_take(result_map, "handshake", fl_value_new_int(handshake));
-      
-      response = FL_METHOD_RESPONSE(fl_method_success_response_new(result_map));
-    }
+gboolean StatusReply(gpointer data) {
+  auto* c = static_cast<StatusCtx*>(data);
+  if (c->ok) {
+    FlutterWireguardTunnelStatus* status = ToPigeonStatus(c->result);
+    flutter_wireguard_wireguard_host_api_respond_status(c->handle, status);
+    g_object_unref(status);
   } else {
-    response = FL_METHOD_RESPONSE(fl_method_not_implemented_response_new());
+    flutter_wireguard_wireguard_host_api_respond_error_status(
+        c->handle, "STATUS_FAILED", c->error.c_str(), nullptr);
   }
-
-  fl_method_call_respond(method_call, response, nullptr);
+  g_object_unref(c->handle);
+  g_object_unref(c->plugin);
+  delete c;
+  return G_SOURCE_REMOVE;
 }
 
-FlMethodResponse* get_platform_version() {
-  struct utsname uname_data = {};
-  uname(&uname_data);
-  g_autofree gchar *version = g_strdup_printf("Linux %s", uname_data.version);
-  g_autoptr(FlValue) result = fl_value_new_string(version);
-  return FL_METHOD_RESPONSE(fl_method_success_response_new(result));
+void HandleStatus(const gchar* name,
+                  FlutterWireguardWireguardHostApiResponseHandle* handle,
+                  gpointer user_data) {
+  auto* plugin = FLUTTER_WIREGUARD_PLUGIN(user_data);
+  g_object_ref(plugin);
+  g_object_ref(handle);
+  auto* ctx = new StatusCtx{plugin, handle, name, {}, "", false};
+  std::thread([ctx]() {
+    try {
+      ctx->result = ctx->plugin->backend->Status(ctx->name);
+      ctx->ok = true;
+    } catch (const std::exception& e) {
+      ctx->error = e.what();
+      ctx->ok = false;
+    }
+    g_idle_add(StatusReply, ctx);
+  }).detach();
 }
 
-// Event channel timer callback
-static gboolean status_timer_callback(gpointer user_data) {
-  FlutterWireguardPlugin* self = FLUTTER_WIREGUARD_PLUGIN(user_data);
-  
-  if (self->tunnel_name == nullptr) {
+void HandleTunnelNames(FlutterWireguardWireguardHostApiResponseHandle* handle,
+                       gpointer user_data) {
+  auto* plugin = FLUTTER_WIREGUARD_PLUGIN(user_data);
+  auto names = plugin->backend->TunnelNames();
+  g_autoptr(FlValue) list = fl_value_new_list();
+  for (const auto& n : names) {
+    fl_value_append_take(list, fl_value_new_string(n.c_str()));
+  }
+  flutter_wireguard_wireguard_host_api_respond_tunnel_names(handle, list);
+}
+
+void HandleBackend(FlutterWireguardWireguardHostApiResponseHandle* handle,
+                   gpointer user_data) {
+  auto* plugin = FLUTTER_WIREGUARD_PLUGIN(user_data);
+  auto info = plugin->backend->Backend();
+  FlutterWireguardBackendInfo* bi = flutter_wireguard_backend_info_new(
+      ToPigeonBackend(info.kind), info.detail.c_str());
+  flutter_wireguard_wireguard_host_api_respond_backend(handle, bi);
+  g_object_unref(bi);
+}
+
+const FlutterWireguardWireguardHostApiVTable kVTable = {
+    /*start=*/HandleStart,
+    /*stop=*/HandleStop,
+    /*status=*/HandleStatus,
+    /*tunnel_names=*/HandleTunnelNames,
+    /*backend=*/HandleBackend,
+};
+
+// One-second status poller. The GLib timer fires on the main loop, but the
+// actual `Status()` calls reach into PrivilegedSession (blocking I/O on the
+// pkexec pipe) so we hand the work to a worker thread and post the per-tunnel
+// updates back via g_idle_add. A simple in-flight flag prevents queueing.
+struct StatusPollContext {
+  FlutterWireguardPlugin* plugin;
+  std::vector<std::pair<std::string, fwg::TunnelStatusCpp>> results;
+};
+
+gboolean StatusPollDispatch(gpointer user_data) {
+  std::unique_ptr<StatusPollContext> ctx(
+      static_cast<StatusPollContext*>(user_data));
+  auto* self = ctx->plugin;
+  if (self->flutter_api != nullptr) {
+    for (auto& [_, s] : ctx->results) {
+      FlutterWireguardTunnelStatus* status = ToPigeonStatus(s);
+      flutter_wireguard_wireguard_flutter_api_on_tunnel_status(
+          self->flutter_api, status, nullptr, nullptr, nullptr);
+      g_object_unref(status);
+    }
+  }
+  self->poll_in_flight = false;
+  g_object_unref(self);
+  return G_SOURCE_REMOVE;
+}
+
+gboolean StatusPollCallback(gpointer user_data) {
+  auto* self = FLUTTER_WIREGUARD_PLUGIN(user_data);
+  if (self->backend == nullptr || self->flutter_api == nullptr) {
     return G_SOURCE_CONTINUE;
   }
-  
-  bool is_up = is_interface_up(self->tunnel_name);
-  int64_t rx = 0, tx = 0;
-  int64_t handshake = get_handshake_timestamp(self->tunnel_name);
-  
-  if (is_up) {
-    get_transfer_stats(self->tunnel_name, &rx, &tx);
+  if (self->poll_in_flight) {
+    // Previous tick still talking to pkexec; don't pile up.
+    return G_SOURCE_CONTINUE;
   }
-  
-  g_autoptr(FlValue) event_map = fl_value_new_map();
-  fl_value_set_string_take(event_map, "name", fl_value_new_string(self->tunnel_name));
-  fl_value_set_string_take(event_map, "state", fl_value_new_string(is_up ? "UP" : "DOWN"));
-  fl_value_set_string_take(event_map, "rx", fl_value_new_int(rx));
-  fl_value_set_string_take(event_map, "tx", fl_value_new_int(tx));
-  fl_value_set_string_take(event_map, "handshake", fl_value_new_int(handshake));
-  
-  fl_event_channel_send(self->event_channel, event_map, nullptr, nullptr);
-  
+  self->poll_in_flight = true;
+  g_object_ref(self);
+  std::thread([self] {
+    auto* ctx = new StatusPollContext{self, {}};
+    for (const auto& name : self->backend->TunnelNames()) {
+      try {
+        ctx->results.emplace_back(name, self->backend->Status(name));
+      } catch (...) {
+        // skip this tunnel
+      }
+    }
+    g_idle_add(StatusPollDispatch, ctx);
+  }).detach();
   return G_SOURCE_CONTINUE;
 }
 
-// Event channel listen handler
-static FlMethodErrorResponse* event_listen_cb(
-    FlEventChannel* channel,
-    FlValue* args,
-    gpointer user_data) {
-  FlutterWireguardPlugin* self = FLUTTER_WIREGUARD_PLUGIN(user_data);
-  
-  // Start timer to emit status updates every second
-  if (self->timer_id == 0) {
-    self->timer_id = g_timeout_add_seconds(1, status_timer_callback, self);
-  }
-  
-  return nullptr;
-}
-
-// Event channel cancel handler
-static FlMethodErrorResponse* event_cancel_cb(
-    FlEventChannel* channel,
-    FlValue* args,
-    gpointer user_data) {
-  FlutterWireguardPlugin* self = FLUTTER_WIREGUARD_PLUGIN(user_data);
-  
-  // Stop timer
-  if (self->timer_id != 0) {
-    g_source_remove(self->timer_id);
-    self->timer_id = 0;
-  }
-  
-  return nullptr;
-}
+}  // namespace
 
 static void flutter_wireguard_plugin_dispose(GObject* object) {
-  FlutterWireguardPlugin* self = FLUTTER_WIREGUARD_PLUGIN(object);
-  
-  if (self->timer_id != 0) {
-    g_source_remove(self->timer_id);
-    self->timer_id = 0;
+  auto* self = FLUTTER_WIREGUARD_PLUGIN(object);
+  if (self->poll_timer_id != 0) {
+    g_source_remove(self->poll_timer_id);
+    self->poll_timer_id = 0;
   }
-  
-  if (self->tunnel_name) {
-    g_free(self->tunnel_name);
-    self->tunnel_name = nullptr;
-  }
-  
+  g_clear_object(&self->flutter_api);
+  delete self->backend;
+  self->backend = nullptr;
   G_OBJECT_CLASS(flutter_wireguard_plugin_parent_class)->dispose(object);
 }
 
@@ -321,42 +292,25 @@ static void flutter_wireguard_plugin_class_init(FlutterWireguardPluginClass* kla
 }
 
 static void flutter_wireguard_plugin_init(FlutterWireguardPlugin* self) {
-  self->tunnel_name = nullptr;
-  self->timer_id = 0;
-}
-
-static void method_call_cb(FlMethodChannel* channel, FlMethodCall* method_call,
-                           gpointer user_data) {
-  FlutterWireguardPlugin* plugin = FLUTTER_WIREGUARD_PLUGIN(user_data);
-  flutter_wireguard_plugin_handle_method_call(plugin, method_call);
+  self->backend = nullptr;
+  self->flutter_api = nullptr;
+  self->poll_timer_id = 0;
+  self->poll_in_flight = false;
 }
 
 void flutter_wireguard_plugin_register_with_registrar(FlPluginRegistrar* registrar) {
-  FlutterWireguardPlugin* plugin = FLUTTER_WIREGUARD_PLUGIN(
+  auto* plugin = FLUTTER_WIREGUARD_PLUGIN(
       g_object_new(flutter_wireguard_plugin_get_type(), nullptr));
 
-  g_autoptr(FlStandardMethodCodec) codec = fl_standard_method_codec_new();
-  
-  // Register method channel
-  g_autoptr(FlMethodChannel) method_channel =
-      fl_method_channel_new(fl_plugin_registrar_get_messenger(registrar),
-                            "dev.fluttercommunity.flutter_wireguard/methodChannel",
-                            FL_METHOD_CODEC(codec));
-  fl_method_channel_set_method_call_handler(method_channel, method_call_cb,
-                                            g_object_ref(plugin),
-                                            g_object_unref);
-  
-  // Register event channel
-  g_autoptr(FlStandardMethodCodec) event_codec = fl_standard_method_codec_new();
-  plugin->event_channel =
-      fl_event_channel_new(fl_plugin_registrar_get_messenger(registrar),
-                          "dev.fluttercommunity.flutter_wireguard/eventChannel",
-                          FL_METHOD_CODEC(event_codec));
-  fl_event_channel_set_stream_handlers(plugin->event_channel,
-                                       event_listen_cb,
-                                       event_cancel_cb,
-                                       g_object_ref(plugin),
-                                       g_object_unref);
+  auto runner = std::make_unique<fwg::RealProcessRunner>();
+  plugin->backend = new fwg::WgBackend(std::move(runner));
 
-  g_object_unref(plugin);
+  FlBinaryMessenger* messenger = fl_plugin_registrar_get_messenger(registrar);
+  // Hand strong ownership of `plugin` to the method handlers; the engine will
+  // call g_object_unref via the destroy_notify when the channel is torn down.
+  flutter_wireguard_wireguard_host_api_set_method_handlers(
+      messenger, /*suffix=*/nullptr, &kVTable, plugin, g_object_unref);
+  plugin->flutter_api = flutter_wireguard_wireguard_flutter_api_new(messenger, nullptr);
+
+  plugin->poll_timer_id = g_timeout_add_seconds(1, StatusPollCallback, plugin);
 }

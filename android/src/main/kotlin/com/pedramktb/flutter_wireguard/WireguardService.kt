@@ -4,100 +4,74 @@ import android.app.Service
 import android.content.Intent
 import android.os.IBinder
 import android.os.RemoteCallbackList
+import com.wireguard.android.backend.Tunnel
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import org.json.JSONObject
 
 /**
- * Runs in the ':wireguard' process (declared in AndroidManifest.xml).
+ * Runs in the ':wireguard' process. Owns Wireguard (and therefore libwg-go.so),
+ * isolating the wireguard-go runtime from the main Flutter process.
  *
- * This isolates libwg-go.so (wireguard-go, embedded inside com.wireguard.android:tunnel)
- * from libnetxlib.so in the main process.  Two Go runtimes built with different Go versions
- * cannot safely coexist in the same process address space, because each embeds its own
- * signal handlers, goroutine scheduler, and GC root tables.
- *
- * All WireGuard work (GoBackend, tunnels, VPN socket) stays in this process.
- * The main Flutter process communicates via the IWireguard AIDL binder and receives
- * live status updates through IWireguardCallback (oneway, non-blocking).
+ * The main process talks to this service over [IWireguard] and receives live
+ * status updates over [IWireguardCallback].
  */
 class WireguardService : Service() {
 
     private lateinit var wireguard: Wireguard
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-
-    // Thread-safe list of remotely registered callbacks (main-process binder proxies).
     private val callbacks = RemoteCallbackList<IWireguardCallback>()
 
-    // ------------------------------------------------------------------
-    // AIDL binder implementation
-    // ------------------------------------------------------------------
-
-    private val binder = object : IWireguard.Stub() {
-
-        override fun start(name: String, config: String) {
-            wireguard.start(name, config)
-        }
-
-        override fun stop(name: String) {
-            wireguard.stop(name)
-        }
-
-        override fun statusJson(name: String): String? {
-            // Let exceptions propagate over Binder so the caller can distinguish
-            // backend failures from a tunnel-not-found null return.
-            val s = wireguard.status(name)
-            return JSONObject().apply {
-                put("name", s.name)
-                put("state", s.state.toString())
-                put("rx", s.rx)
-                put("tx", s.tx)
-                put("handshake", s.handshake)
-            }.toString()
-        }
-
-        override fun backendType(): String = wireguard.backendType()
-
-        override fun registerCallback(callback: IWireguardCallback) {
-            callbacks.register(callback)
-        }
-
-        override fun unregisterCallback(callback: IWireguardCallback) {
-            callbacks.unregister(callback)
-        }
+    // AIDL only propagates a fixed set of exceptions across processes.
+    // Generic RuntimeException is NOT one of them — it would surface as
+    // "Uncaught remote exception" and the client sees a successful return.
+    // IllegalStateException IS in the auto-propagated list, so we wrap any
+    // failure as one and let the message survive the binder boundary.
+    private inline fun <T> rethrow(block: () -> T): T = try {
+        block()
+    } catch (e: IllegalStateException) {
+        throw e
+    } catch (e: IllegalArgumentException) {
+        throw e
+    } catch (e: SecurityException) {
+        throw e
+    } catch (e: Exception) {
+        throw IllegalStateException("${e.javaClass.simpleName}: ${e.message ?: ""}", e)
     }
 
-    // ------------------------------------------------------------------
-    // Lifecycle
-    // ------------------------------------------------------------------
+    private val binder = object : IWireguard.Stub() {
+        override fun start(name: String, config: String) = rethrow { wireguard.start(name, config) }
+        override fun stop(name: String) = rethrow { wireguard.stop(name) }
+        override fun statusJson(name: String): String = rethrow { wireguard.status(name).toJson() }
+        override fun tunnelNames(): Array<String> = rethrow { wireguard.tunnelNames().toTypedArray() }
+        override fun backendJson(): String = rethrow {
+            JSONObject().apply {
+                put("kind", wireguard.backendInfo.kind.name.lowercase())
+                put("detail", wireguard.backendInfo.detail)
+            }.toString()
+        }
+        override fun registerCallback(cb: IWireguardCallback) { callbacks.register(cb) }
+        override fun unregisterCallback(cb: IWireguardCallback) { callbacks.unregister(cb) }
+    }
 
     override fun onCreate() {
         super.onCreate()
         wireguard = Wireguard.getInstance(applicationContext)
 
-        // Forward tunnel status changes to all registered remote callbacks.
         scope.launch {
-            wireguard.tunnelStatusFlow.collect { statuses ->
-                statuses.forEach { (name, status) ->
-                    val count = callbacks.beginBroadcast()
-                    for (i in 0 until count) {
-                        try {
-                            callbacks.getBroadcastItem(i).onTunnelStatus(
-                                name,
-                                status.state.toString(),
-                                status.rx,
-                                status.tx,
-                                status.handshake
-                            )
-                        } catch (_: Exception) {
-                            // Dead callback; RemoteCallbackList removes it automatically.
-                        }
-                    }
-                    callbacks.finishBroadcast()
+            wireguard.events.collect { s ->
+                val n = callbacks.beginBroadcast()
+                for (i in 0 until n) {
+                    try {
+                        callbacks.getBroadcastItem(i).onTunnelStatus(
+                            s.name, s.state.name, s.rx, s.tx, s.handshake
+                        )
+                    } catch (_: Exception) { /* dead callback removed by RemoteCallbackList */ }
                 }
+                callbacks.finishBroadcast()
             }
         }
     }
@@ -109,4 +83,23 @@ class WireguardService : Service() {
         callbacks.kill()
         super.onDestroy()
     }
+}
+
+private fun Wireguard.Status.toJson(): String = JSONObject().apply {
+    put("name", name)
+    put("state", state.name)
+    put("rx", rx)
+    put("tx", tx)
+    put("handshake", handshake)
+}.toString()
+
+internal fun parseStatusJson(json: String): Wireguard.Status {
+    val o = JSONObject(json)
+    return Wireguard.Status(
+        name = o.getString("name"),
+        state = Tunnel.State.valueOf(o.getString("state")),
+        rx = o.getLong("rx"),
+        tx = o.getLong("tx"),
+        handshake = o.getLong("handshake"),
+    )
 }

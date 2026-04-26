@@ -1,0 +1,28 @@
+# Publishes flutter_wireguard to pub.dev when a version tag is pushed.
+#
+# Setup (one-time, on pub.dev):
+#   1. Sign in to https://pub.dev/packages/flutter_wireguard/admin
+#   2. Under "Automated publishing", enable GitHub Actions and set:
+#        Repository:       pedramktb/flutter-wireguard
+#        Tag pattern:      v{{version}}
+#   3. pub.dev will then trust OIDC tokens from this workflow.
+#
+# Release flow:
+#   - Bump `version:` in pubspec.yaml, update CHANGELOG.md, merge to main.
+#   - `git tag v1.2.3 && git push origin v1.2.3`
+#   - This workflow runs `dart pub publish` using the OIDC token; no
+#     long-lived credentials are stored in the repo.
+#
+# Reference: https://dart.dev/tools/pub/automated-publishing
+name: Publish to pub.dev
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+*'
+
+jobs:
+  publish:
+    permissions:
+      id-token: write # Required for authentication using OIDC
+    uses: dart-lang/setup-dart/.github/workflows/publish.yml@v1
