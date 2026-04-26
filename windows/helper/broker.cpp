@@ -2,13 +2,9 @@
 
 #include <windows.h>
 
-#include <atomic>
-#include <condition_variable>
 #include <cstdio>
 #include <cstring>
-#include <memory>
 #include <mutex>
-#include <thread>
 #include <vector>
 
 #include "../../cpp/ipc_protocol.h"
@@ -141,19 +137,14 @@ void Broker::EmitStatus(HANDLE pipe, const TunnelStatusSnapshot& s) {
 }
 
 void Broker::HandleClient(HANDLE pipe) {
-  auto pipe_write_mu = std::make_shared<std::mutex>();
+  // Status events are emitted from the TunnelManager's poller thread; they
+  // race with our own response writes, so serialize all writes to this pipe.
+  std::mutex pipe_write_mu;
   manager_->SetStatusCallback(
-      [this, pipe, pipe_write_mu](const TunnelStatusSnapshot& s) {
-        std::lock_guard<std::mutex> lock(*pipe_write_mu);
+      [this, pipe, &pipe_write_mu](const TunnelStatusSnapshot& s) {
+        std::lock_guard<std::mutex> lock(pipe_write_mu);
         EmitStatus(pipe, s);
       });
-
-  // Track in-flight worker threads so we can join them before we let the
-  // pipe handle close in the caller.
-  std::mutex inflight_mu;
-  std::condition_variable inflight_cv;
-  int inflight = 0;
-  std::atomic<bool> write_failed{false};
 
   for (;;) {
     uint32_t op = 0, seq = 0;
@@ -162,125 +153,94 @@ void Broker::HandleClient(HANDLE pipe) {
     if (!ReadFrame(pipe, &op, &seq, &flags, &payload)) {
       break;
     }
-    if (write_failed.load()) break;
 
-    {
-      std::lock_guard<std::mutex> lk(inflight_mu);
-      ++inflight;
+    std::vector<uint8_t> resp;
+    try {
+      ipc_ns::Reader r(payload.data(), payload.size());
+      switch (op) {
+        case ipc_ns::kOpHello: {
+          uint32_t client_v = r.U32();
+          if (client_v != ipc_ns::kProtocolVersion) {
+            resp = Err("protocol version mismatch");
+            break;
+          }
+          ipc_ns::Writer w;
+          w.U8(ipc_ns::kStatusOk);
+          w.U32(ipc_ns::kProtocolVersion);
+          resp = w.Take();
+          break;
+        }
+        case ipc_ns::kOpStart: {
+          std::string name = r.Str();
+          std::string config = r.Str();
+          if (!IsValidTunnelName(name)) {
+            resp = Err("invalid tunnel name");
+            break;
+          }
+          if (config.size() > ipc_ns::kMaxConfigBytes) {
+            resp = Err("config too large");
+            break;
+          }
+          manager_->Start(name, config);
+          resp = Ok();
+          break;
+        }
+        case ipc_ns::kOpStop: {
+          std::string name = r.Str();
+          if (!IsValidTunnelName(name)) {
+            resp = Err("invalid tunnel name");
+            break;
+          }
+          manager_->Stop(name);
+          resp = Ok();
+          break;
+        }
+        case ipc_ns::kOpStatus: {
+          std::string name = r.Str();
+          if (!IsValidTunnelName(name)) {
+            resp = Err("invalid tunnel name");
+            break;
+          }
+          TunnelStatusSnapshot s = manager_->Status(name);
+          resp = EncodeStatus(s);
+          break;
+        }
+        case ipc_ns::kOpTunnelNames: {
+          ipc_ns::Writer w;
+          w.U8(ipc_ns::kStatusOk);
+          auto names = manager_->TunnelNames();
+          w.U32(static_cast<uint32_t>(names.size()));
+          for (const auto& n : names) w.Str(n);
+          resp = w.Take();
+          break;
+        }
+        case ipc_ns::kOpBackend: {
+          ipc_ns::Writer w;
+          w.U8(ipc_ns::kStatusOk);
+          BackendInfoSnapshot b = manager_->Backend();
+          w.U8(b.kind);
+          w.Str(b.detail);
+          resp = w.Take();
+          break;
+        }
+        case ipc_ns::kOpSubscribe: {
+          resp = Ok();
+          break;
+        }
+        default:
+          resp = Err("unknown op");
+          break;
+      }
+    } catch (const std::exception& e) {
+      resp = Err(e.what() ? e.what() : "");
+    } catch (...) {
+      resp = Err("unknown error");
     }
 
-    std::thread([this, pipe, pipe_write_mu, op, seq, payload = std::move(payload),
-                 &inflight_mu, &inflight_cv, &inflight, &write_failed]() mutable {
-      std::vector<uint8_t> resp;
-      try {
-        ipc_ns::Reader r(payload.data(), payload.size());
-        switch (op) {
-          case ipc_ns::kOpHello: {
-            uint32_t client_v = r.U32();
-            if (client_v != ipc_ns::kProtocolVersion) {
-              resp = Err("protocol version mismatch");
-              break;
-            }
-            ipc_ns::Writer w;
-            w.U8(ipc_ns::kStatusOk);
-            w.U32(ipc_ns::kProtocolVersion);
-            resp = w.Take();
-            break;
-          }
-          case ipc_ns::kOpStart: {
-            std::string name = r.Str();
-            std::string config = r.Str();
-            if (!IsValidTunnelName(name)) {
-              resp = Err("invalid tunnel name");
-              break;
-            }
-            if (config.size() > ipc_ns::kMaxConfigBytes) {
-              resp = Err("config too large");
-              break;
-            }
-            // Reject obviously empty/garbage configs early so we don't churn
-            // SCM with services that can't possibly come up.
-            if (config.find("[Interface]") == std::string::npos) {
-              resp = Err("config missing [Interface] section");
-              break;
-            }
-            if (config.find("PrivateKey") == std::string::npos) {
-              resp = Err("config missing PrivateKey");
-              break;
-            }
-            manager_->Start(name, config);
-            resp = Ok();
-            break;
-          }
-          case ipc_ns::kOpStop: {
-            std::string name = r.Str();
-            if (!IsValidTunnelName(name)) {
-              resp = Err("invalid tunnel name");
-              break;
-            }
-            manager_->Stop(name);
-            resp = Ok();
-            break;
-          }
-          case ipc_ns::kOpStatus: {
-            std::string name = r.Str();
-            if (!IsValidTunnelName(name)) {
-              resp = Err("invalid tunnel name");
-              break;
-            }
-            TunnelStatusSnapshot s = manager_->Status(name);
-            resp = EncodeStatus(s);
-            break;
-          }
-          case ipc_ns::kOpTunnelNames: {
-            ipc_ns::Writer w;
-            w.U8(ipc_ns::kStatusOk);
-            auto names = manager_->TunnelNames();
-            w.U32(static_cast<uint32_t>(names.size()));
-            for (const auto& n : names) w.Str(n);
-            resp = w.Take();
-            break;
-          }
-          case ipc_ns::kOpBackend: {
-            ipc_ns::Writer w;
-            w.U8(ipc_ns::kStatusOk);
-            BackendInfoSnapshot b = manager_->Backend();
-            w.U8(b.kind);
-            w.Str(b.detail);
-            resp = w.Take();
-            break;
-          }
-          case ipc_ns::kOpSubscribe: {
-            resp = Ok();
-            break;
-          }
-          default:
-            resp = Err("unknown op");
-            break;
-        }
-      } catch (const std::exception& e) {
-        resp = Err(e.what() ? e.what() : "");
-      } catch (...) {
-        resp = Err("unknown error");
-      }
-
-      {
-        std::lock_guard<std::mutex> lock(*pipe_write_mu);
-        if (!WriteResponse(pipe, seq, resp)) {
-          write_failed.store(true);
-        }
-      }
-      {
-        std::lock_guard<std::mutex> lk(inflight_mu);
-        if (--inflight == 0) inflight_cv.notify_all();
-      }
-    }).detach();
-  }
-
-  // Drain any in-flight workers before we tear the pipe down.
-  {
-    std::unique_lock<std::mutex> lk(inflight_mu);
-    inflight_cv.wait(lk, [&]() { return inflight == 0; });
+    std::lock_guard<std::mutex> lock(pipe_write_mu);
+    if (!WriteResponse(pipe, seq, resp)) {
+      break;
+    }
   }
 
   manager_->SetStatusCallback({});
