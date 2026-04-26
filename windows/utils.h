@@ -1,33 +1,27 @@
-#ifndef WIREGUARD_FLUTTER_UTILS_H
-#define WIREGUARD_FLUTTER_UTILS_H
+// Win32 / std utility helpers shared between the Flutter plugin DLL and the
+// elevated helper.exe broker. No Flutter / Pigeon dependencies on purpose:
+// helper.exe must not link against the Flutter Windows engine.
+#ifndef FLUTTER_WIREGUARD_UTILS_H_
+#define FLUTTER_WIREGUARD_UTILS_H_
 
-#include <flutter/encodable_value.h>
 #include <windows.h>
 
-#include <sstream>
 #include <string>
 
 namespace flutter_wireguard {
 
-const flutter::EncodableValue *ValueOrNull(const flutter::EncodableMap &map, const char *key);
+// "<msg> (<code>: <FormatMessageA>)" — the trailing system-message piece is
+// best-effort; on failure only the code is appended.
+std::string ErrorWithCode(const char* msg, unsigned long error_code);
 
-std::string ErrorWithCode(const char *msg, unsigned long error_code);
+// UTF-8 <-> UTF-16 conversions. Centralised so every boundary is auditable.
+std::string WideToUtf8(const std::wstring& wstr);
+std::wstring Utf8ToWide(const std::string& str);
 
-std::string WideToUtf8(const std::wstring &wstr);
-
-std::wstring Utf8ToWide(const std::string &str);
-
-std::string WideToAnsi(const std::wstring &wstr);
-
-std::wstring AnsiToWide(const std::string &str);
-
-// Pops a message box (useful for debugging native code)
-void DebugMessageBox(const char* msg);
-
-// Safe logging for Windows GUI applications (outputs to debugger)
+// Best-effort logging via OutputDebugString. Never logs config payloads.
 void Log(const std::string& message);
 void Log(const std::wstring& message);
 
 }  // namespace flutter_wireguard
 
-#endif
+#endif  // FLUTTER_WIREGUARD_UTILS_H_

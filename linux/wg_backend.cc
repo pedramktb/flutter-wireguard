@@ -13,11 +13,11 @@
 #include <sstream>
 #include <stdexcept>
 
+#include "name_validator.h"
+
 namespace flutter_wireguard {
 
 namespace {
-
-constexpr size_t kMaxIfaceLen = 15;  // IFNAMSIZ - 1
 
 // Splits `s` on `sep` into a vector. Empty trailing fields are preserved.
 std::vector<std::string> Split(const std::string& s, char sep) {
@@ -67,15 +67,7 @@ bool WgBackend::ReadSysfsCounters(const std::string& name,
 }
 
 bool WgBackend::IsValidName(const std::string& name) {
-  if (name.empty() || name.size() > kMaxIfaceLen) return false;
-  if (name == "." || name == "..") return false;
-  for (char c : name) {
-    const bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-                    (c >= '0' && c <= '9') ||
-                    c == '_' || c == '=' || c == '+' || c == '.' || c == '-';
-    if (!ok) return false;
-  }
-  return true;
+  return ::flutter_wireguard::IsValidTunnelName(name);
 }
 
 TunnelStatusCpp WgBackend::ParseWgShowDump(const std::string& name,

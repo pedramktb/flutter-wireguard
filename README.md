@@ -6,7 +6,7 @@ A Flutter plugin for creating and managing [WireGuard](https://www.wireguard.com
 
 | Android | Linux | iOS | macOS | Windows |
 |:---:|:---:|:---:|:---:|:---:|
-| ✅ | ✅ | 🚧 | 🚧 | 🚧 |
+| ✅ | ✅ | 🚧 | 🚧 | ✅ |
 
 The API is identical across supported platforms (multi-tunnel, status streaming, backend introspection, key generation).
 
@@ -127,7 +127,33 @@ The environment variable `FLUTTER_WIREGUARD_ELEVATE` lets the embedding app over
 | `none` | Skip elevation entirely. The plugin runs `wg-quick`/`wg` directly. Use when the app already has `CAP_NET_ADMIN` (e.g. a system service started by systemd with `AmbientCapabilities=CAP_NET_ADMIN`). |
 | any other string | Whitespace-split argv prefix that wraps the persistent shell — e.g. `flatpak-spawn --host pkexec` to escape a flatpak sandbox, or `sudo -A` for a custom askpass helper. |
 
-### iOS / macOS / Windows
+### Windows
+
+Windows uses the official [`wireguard-nt`](https://git.zx2c4.com/wireguard-nt/) kernel driver via `wireguard.dll` plus the embeddable [`tunnel.dll`](https://git.zx2c4.com/wireguard-windows/tree/embeddable-dll-service) packet-tunnel runtime, both vendored under `windows/lib/`.
+
+Process model:
+
+* The plugin DLL inside the Flutter app stays unprivileged.
+* On the first call, the plugin spawns `flutter_wireguard_helper.exe --broker` with `ShellExecuteEx("runas")` — a single UAC prompt per app session.
+* The elevated broker exposes a per-session named pipe (`\\.\pipe\flutter_wireguard_broker_<sid>`, DACL'd to the launching user, SYSTEM, and Administrators). All `start` / `stop` / `status` calls are forwarded over that pipe.
+* The broker registers each tunnel as a Windows service named `WireGuardTunnel$<name>` whose `ImagePath` is `flutter_wireguard_helper.exe --tunnel-service <conf>`. The service body loads `tunnel.dll` and runs the WireGuard goroutine. tunnel.dll lives in the service process, never in the Flutter UI process.
+* Configurations are stored in `%PROGRAMDATA%\flutter_wireguard\configs\<name>.conf.dpapi`, encrypted with DPAPI (`CRYPTPROTECT_LOCAL_MACHINE`) and ACL'd to SYSTEM + Administrators only. The plaintext `<name>.conf` that `tunnel.dll` reads lives next to it with the same DACL and is overwritten + deleted on `stop`.
+* Tunnel names are validated against `^[A-Za-z0-9_=+.-]{1,15}$` before they reach SCM, the registry, or the filesystem.
+
+Bundled per-build:
+
+```
+flutter_wireguard_plugin.dll      (UI process; no admin)
+flutter_wireguard_helper.exe      (broker + per-tunnel SCM service body)
+wireguard.dll                     (wireguard-nt; loaded inside the broker)
+tunnel.dll                        (wireguard-go embeddable; loaded inside the SCM service)
+```
+
+MSIX / Microsoft Store: not currently supported. The broker model is Store-friendly in principle (the UI process is not manifested as `requireAdministrator`), but Store apps cannot create services. A Store distribution would need a packaged Win32 service installed by an installer outside the MSIX bundle.
+
+See [doc/WINDOWS_SETUP.md](doc/WINDOWS_SETUP.md) for instructions on running the Windows build inside a Linux-hosted VM.
+
+### iOS / macOS
 
 > ⚠️ Not yet implemented.
 

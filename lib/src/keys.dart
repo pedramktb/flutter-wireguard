@@ -3,7 +3,7 @@
 /// WireGuard uses Curve25519 (X25519). Keys are 32 bytes each, exchanged in
 /// base64. This module produces / parses keys that are byte-for-byte
 /// compatible with `wg genkey`, `wg pubkey`, and `wg genpsk`.
-library flutter_wireguard.keys;
+library;
 
 import 'dart:convert';
 import 'dart:math';

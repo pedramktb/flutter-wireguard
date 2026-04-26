@@ -3,7 +3,7 @@
 /// All operations are top-level functions; there is no facade object to
 /// instantiate. Status events are exposed as a single broadcast [Stream] that
 /// any number of listeners can attach to.
-library flutter_wireguard;
+library;
 
 import 'dart:async';
 

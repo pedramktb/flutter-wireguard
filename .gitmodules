@@ -1,0 +1,3 @@
+[submodule "third_party/wireguard-windows"]
+	path = third_party/wireguard-windows
+	url = https://git.zx2c4.com/wireguard-windows
