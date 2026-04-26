@@ -79,9 +79,11 @@ std::wstring ConfDir() {
   // the second call, which is fine.
   std::wstring parent = ProgramDataPath() + L"\\flutter_wireguard";
   ::CreateDirectoryW(parent.c_str(), nullptr);
-  if (::CreateDirectoryW(base.c_str(), nullptr)) {
-    ApplyRestrictiveDacl(base);
-  }
+  ::CreateDirectoryW(base.c_str(), nullptr);
+  // Always enforce the restrictive DACL on the configs dir, even if it was
+  // pre-created with permissive (inheritable) ACLs. Files created inside
+  // inherit from this descriptor.
+  ApplyRestrictiveDacl(base);
   return base;
 }
 

@@ -130,12 +130,12 @@ std::wstring BrokerClient::ResolveHelperPath() {
 HANDLE BrokerClient::LaunchBrokerAndConnect() {
   DWORD session_id = ::WTSGetActiveConsoleSessionId();
   if (session_id == 0xFFFFFFFFu) {
-    throw std::runtime_error("could not resolve console session id");
+    throw BrokerError("could not resolve console session id");
   }
 
   std::wstring helper = ResolveHelperPath();
   if (helper.empty()) {
-    throw std::runtime_error("could not resolve helper exe path");
+    throw BrokerError("could not resolve helper exe path");
   }
 
   // Build pipe name for this session.
@@ -182,7 +182,7 @@ HANDLE BrokerClient::LaunchBrokerAndConnect() {
     }
     ::Sleep(kConnectSleepMs);
   }
-  throw std::runtime_error("timed out waiting for broker pipe");
+  throw BrokerError("timed out waiting for broker pipe");
 }
 
 void BrokerClient::EnsureConnected() {
@@ -203,7 +203,7 @@ void BrokerClient::EnsureConnected() {
   }
   uint32_t broker_v = r.U32();
   if (broker_v != ipc_ns::kProtocolVersion) {
-    throw std::runtime_error("broker protocol version mismatch");
+    throw BrokerError("broker protocol version mismatch");
   }
 
   // Subscribe to status events.
@@ -254,9 +254,9 @@ void BrokerClient::ReaderLoop() {
       if (it == inflight_.end()) continue;
       pending = it->second;
       inflight_.erase(it);
+      pending->payload = std::move(payload);
+      pending->ready = true;
     }
-    pending->payload = std::move(payload);
-    pending->ready = true;
     cv_.notify_all();
   }
 
