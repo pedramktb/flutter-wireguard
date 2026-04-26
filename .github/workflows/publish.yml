@@ -41,44 +41,43 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           version="${TAG#v}"
-          # Render every published (non-draft) GitHub Release, newest first,
-          # as a Keep-a-Changelog-style markdown file. If the current tag
-          # has no Release yet, fall back to auto-generated notes so pub.dev
-          # still sees a CHANGELOG entry for the version being published.
+          # `gh release list` does NOT expose the body field; fetch the full
+          # release objects via the REST API (newest first by default) which
+          # does include `body`. Render them as a Keep-a-Changelog-style file.
+          # The current tag MUST have a corresponding GitHub Release - create
+          # one with `gh release create vX.Y.Z --generate-notes` before
+          # pushing the tag.
+          gh api --paginate "repos/${REPO}/releases" \
+            --jq '.[] | select(.draft|not)
+                  | [.tag_name, (.body // ""), .published_at] | @tsv' \
+            > releases.tsv
+          if ! awk -F'\t' -v t="$TAG" '$1==t{found=1} END{exit !found}' releases.tsv; then
+            echo "::error::No GitHub Release found for tag $TAG."
+            echo "::error::Create one first: gh release create $TAG --generate-notes"
+            exit 1
+          fi
           {
             echo "# Changelog"
             echo
-            had_current=0
-            while IFS=$'\t' read -r tag _name body published; do
+            while IFS=$'\t' read -r tag body published; do
               [ -z "$tag" ] && continue
               v="${tag#v}"
-              echo "## $v - ${published%T*}"
+              echo "## ${v} - ${published%T*}"
               echo
-              if [ -n "$body" ] && [ "$body" != "null" ]; then
-                printf '%s\n\n' "$body"
+              if [ -n "$body" ]; then
+                # Unescape \r\n that the API returns inside the TSV cell.
+                printf '%b\n\n' "$body"
               else
                 echo "_No release notes._"
                 echo
               fi
-              [ "$tag" = "$TAG" ] && had_current=1
-            done < <(gh release list --limit 100 \
-                       --json tagName,name,body,publishedAt,isDraft \
-                       --jq '.[] | select(.isDraft|not)
-                             | [.tagName, .name, .body, .publishedAt]
-                             | @tsv')
-            if [ "$had_current" = "0" ]; then
-              echo "## $version - $(date -u +%Y-%m-%d)"
-              echo
-              gh api -X POST \
-                "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
-                -f tag_name="$TAG" \
-                --jq '.body' || echo "_Released $TAG_"
-              echo
-            fi
+            done < releases.tsv
           } > CHANGELOG.md
+          rm -f releases.tsv
           echo "----- generated CHANGELOG.md -----"
           head -40 CHANGELOG.md
 
