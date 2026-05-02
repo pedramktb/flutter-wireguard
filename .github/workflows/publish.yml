@@ -8,14 +8,16 @@
 #   3. pub.dev will then trust OIDC tokens from this workflow.
 #
 # Release flow:
-#   - Bump `version:` in pubspec.yaml, push to main.
+#   - `version:` in pubspec.yaml stays at the `0.0.0` placeholder; this
+#     workflow rewrites it from the git tag at publish time.
 #   - Create a GitHub Release for tag vX.Y.Z (e.g.
 #     `gh release create vX.Y.Z --generate-notes`). Pushing the tag
 #     triggers this workflow.
-#   - The workflow generates CHANGELOG.md from the GitHub Releases
-#     (pub.dev requires the file to ship in the published archive)
-#     and then runs `dart pub publish` using OIDC -- no long-lived
-#     PUB_DEV_PUBLISH_TOKEN secret is needed.
+#   - The workflow rewrites pubspec's `version:` to the tag, generates
+#     CHANGELOG.md from the GitHub Releases (pub.dev requires the file
+#     to ship in the published archive) and then runs `flutter pub
+#     publish` using OIDC -- no long-lived PUB_DEV_PUBLISH_TOKEN secret
+#     is needed.
 #
 # Reference: https://dart.dev/tools/pub/automated-publishing
 name: Publish to pub.dev
@@ -36,6 +38,25 @@ jobs:
       contents: read    # checkout
     steps:
       - uses: actions/checkout@v4
+
+      - name: Set pubspec version from tag
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          # Sanity check the tag matches semver (the workflow trigger already
+          # constrains the shape, but be defensive against pre-release tags
+          # we might add later).
+          if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([+-].+)?$'; then
+            echo "::error::Tag $TAG does not parse as a semver version"
+            exit 1
+          fi
+          # Replace the `version:` line in-place. pubspec.yaml ships with a
+          # 0.0.0 placeholder so this is the only spot that ever needs editing.
+          sed -i -E "s/^version:[[:space:]]*[^[:space:]#]+(.*)$/version: ${version}\1/" pubspec.yaml
+          echo "----- pubspec.yaml after version rewrite -----"
+          grep '^version:' pubspec.yaml
 
       - name: Generate CHANGELOG.md from GitHub Releases
         env:
