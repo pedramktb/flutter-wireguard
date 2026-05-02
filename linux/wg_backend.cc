@@ -2,6 +2,7 @@
 
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <sys/utsname.h>
 #include <unistd.h>
 
 #include <cerrno>
@@ -162,8 +163,28 @@ WgBackend::WgBackend(std::unique_ptr<ProcessRunner> runner,
   DetectBackend();
 }
 
+bool WgBackend::KernelModuleAvailable() const {
+  std::error_code ec;
+  // Already loaded, or built into the kernel (=y).
+  if (std::filesystem::exists("/sys/module/wireguard", ec)) return true;
+  // Loadable but not yet loaded — wg-quick will modprobe it on Start.
+  // Look for wireguard.ko[.{xz,zst,gz}] under /lib/modules/<release>/.
+  struct utsname uts {};
+  if (::uname(&uts) != 0) return false;
+  std::filesystem::path mod_root =
+      std::filesystem::path("/lib/modules") / uts.release;
+  if (!std::filesystem::exists(mod_root, ec)) return false;
+  for (const auto& entry :
+       std::filesystem::recursive_directory_iterator(mod_root, ec)) {
+    if (ec) break;
+    const std::string fn = entry.path().filename().string();
+    if (fn == "wireguard.ko" || fn.rfind("wireguard.ko.", 0) == 0) return true;
+  }
+  return false;
+}
+
 void WgBackend::DetectBackend() {
-  const bool kernel_loaded = std::filesystem::exists("/sys/module/wireguard");
+  const bool kernel_available = KernelModuleAvailable();
   const bool has_wg_quick = runner_->HasBinary("wg-quick");
   const bool has_wg = runner_->HasBinary("wg");
   const bool has_userspace =
@@ -176,7 +197,7 @@ void WgBackend::DetectBackend() {
     backend_.detail = "wireguard-tools not installed";
     return;
   }
-  if (kernel_loaded) {
+  if (kernel_available) {
     backend_.kind = BackendKindCpp::kKernel;
     backend_.detail = "wg-quick (kernel)";
   } else if (has_userspace) {

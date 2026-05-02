@@ -99,6 +99,11 @@ class WgBackend {
   // Detects the active backend at construction.
   void DetectBackend();
 
+  // True if the wireguard kernel module is loaded, built into the kernel, or
+  // present as a loadable .ko under /lib/modules/<release>/ (in which case
+  // wg-quick will modprobe it on Start).
+  bool KernelModuleAvailable() const;
+
   // Returns the userspace impl name for env var, or "" if kernel mode.
   std::string PickUserspaceImpl() const;
 
