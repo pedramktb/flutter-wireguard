@@ -17,7 +17,7 @@ dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^6.0.0
-  pigeon: ^26.3.4
+  pigeon: ">=26.3.4 <28.0.0"
   mocktail: ^1.0.4
 
 flutter:
